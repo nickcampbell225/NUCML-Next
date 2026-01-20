@@ -28,14 +28,40 @@ Classical ML models can achieve low error on geometric metrics while producing u
 
 ## Quick Start
 
+### 📚 Educational Mode (Synthetic Data for Teaching)
 ```bash
 # Install
 git clone https://github.com/WHopkins-git/NUCML-Next.git
 cd NUCML-Next
 pip install -r requirements.txt
 
-# Run educational notebooks (uses real EXFOR data)
+# Run educational notebooks (auto-generates synthetic demo data)
 jupyter notebook notebooks/00_Baselines_and_Limitations.ipynb
+```
+
+### 🏭 Production Mode (Real EXFOR Data Only)
+```bash
+# 1. Download EXFOR-X5json from IAEA
+#    Visit: https://www-nds.iaea.org/exfor/
+#    Download and unzip bulk database
+
+# 2. Ingest EXFOR to Parquet
+python scripts/ingest_exfor.py \
+    --exfor-root ~/data/EXFOR-X5json/ \
+    --output data/exfor_processed.parquet
+
+# 3. Verify real data loading
+jupyter notebook notebooks/00_Production_EXFOR_Data_Loading.ipynb
+```
+
+**⚠️ PRODUCTION REQUIREMENT:**
+For production evaluations, you MUST use real EXFOR data:
+```python
+dataset = NucmlDataset(
+    data_path='data/exfor_processed.parquet',
+    require_real_data=True  # ← Enforces real data, prevents synthetic fallback
+)
+dataset.assert_real_data()  # ← Verification check
 ```
 
 ---
