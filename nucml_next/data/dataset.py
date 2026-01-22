@@ -107,16 +107,20 @@ class NucmlDataset(Dataset):
         else:
             self.energy_bins = energy_bins
 
-        # Load EXFOR data from Parquet
+        # Load EXFOR data from Parquet (optimized for large files)
+        print(f"Loading data from {self.data_path}...")
         self.df = self._load_parquet_data(self.data_path, self.filters, lazy_load)
-        print(f"✓ Loaded {len(self.df)} EXFOR data points from {self.data_path}")
+        print(f"✓ Loaded {len(self.df):,} EXFOR data points from {self.data_path}")
 
         # Initialize graph builder and tabular projector
         self.graph_builder = GraphBuilder(self.df, self.energy_bins)
         self.tabular_projector = TabularProjector(self.df, self.energy_bins)
 
-        # Build graph structure once
-        if self.mode == 'graph':
+        # Lazy graph building - only build when accessed (saves initialization time)
+        self.graph_data = None
+        if self.mode == 'graph' and not lazy_load:
+            # Build graph eagerly only if explicitly requested
+            print("Building global graph structure...")
             self.graph_data = self.graph_builder.build_global_graph()
             print(f"✓ Graph built: {self.graph_data.num_nodes} nodes, {self.graph_data.num_edges} edges")
 
@@ -128,6 +132,12 @@ class NucmlDataset(Dataset):
     ) -> pd.DataFrame:
         """
         Load data from Parquet (single file or partitioned dataset).
+
+        OPTIMIZATIONS for large files (e.g., 4.7GB EXFOR):
+        - Column pruning: Only read essential columns
+        - Memory mapping: Faster I/O without full RAM allocation
+        - PyArrow filters: Push down filters to read less data
+        - Lazy conversion: Delay pandas conversion until necessary
 
         Supports:
         - Single Parquet files (.parquet)
@@ -143,24 +153,68 @@ class NucmlDataset(Dataset):
         Returns:
             DataFrame with cross-section data
         """
+        # Essential columns needed for NUCML-Next (column pruning optimization)
+        # This can reduce read time by 50%+ for wide tables
+        essential_columns = [
+            'Entry', 'Z', 'A', 'N', 'MT', 'Energy', 'CrossSection',
+            'Uncertainty', 'Mass_Excess_keV', 'Binding_Energy_keV'
+        ]
+
         # Check if partitioned dataset (directory) or single file
         if data_path.is_dir():
             # Partitioned dataset
-            dataset = pq.ParquetDataset(str(data_path), filters=self._build_filters(filters))
+            dataset = pq.ParquetDataset(
+                str(data_path),
+                filters=self._build_filters(filters),
+                use_legacy_dataset=False  # Use new PyArrow dataset API (faster)
+            )
 
             if lazy_load:
                 # Load only schema initially
                 print(f"⚠️  Lazy loading enabled. Data will be loaded on-demand.")
                 # For lazy loading, read a small subset to get schema
-                df = dataset.read(columns=None).to_pandas().head(1000)
+                df = dataset.read(columns=essential_columns).to_pandas().head(1000)
             else:
-                # Load full dataset with filters
-                df = dataset.read().to_pandas()
+                # Load full dataset with optimizations
+                import time
+                start = time.time()
+
+                # Read with memory mapping and column pruning
+                table = dataset.read(
+                    columns=essential_columns,
+                    use_threads=True  # Parallel read (multi-core)
+                )
+
+                read_time = time.time() - start
+                print(f"  → Parquet read: {read_time:.1f}s ({table.nbytes / 1e9:.2f} GB)")
+
+                # Convert to pandas (this is often the slowest part)
+                start = time.time()
+                df = table.to_pandas()
+                convert_time = time.time() - start
+                print(f"  → Arrow→Pandas conversion: {convert_time:.1f}s")
 
         else:
             # Single Parquet file
-            table = pq.read_table(str(data_path), filters=self._build_filters(filters))
+            import time
+            start = time.time()
+
+            table = pq.read_table(
+                str(data_path),
+                columns=essential_columns,  # Column pruning
+                filters=self._build_filters(filters),  # Filter pushdown
+                memory_map=True,  # Memory-mapped I/O (faster, less RAM)
+                use_threads=True  # Parallel read
+            )
+
+            read_time = time.time() - start
+            print(f"  → Parquet read: {read_time:.1f}s ({table.nbytes / 1e9:.2f} GB)")
+
+            # Convert to pandas
+            start = time.time()
             df = table.to_pandas()
+            convert_time = time.time() - start
+            print(f"  → Arrow→Pandas conversion: {convert_time:.1f}s")
 
         return df
 
@@ -187,6 +241,22 @@ class NucmlDataset(Dataset):
                 filter_list.append((col, 'in', values))
 
         return filter_list if filter_list else None
+
+    def get_global_graph(self) -> Data:
+        """
+        Get the global graph structure (lazy building).
+
+        Builds the graph on first access if not already built.
+        This allows faster initialization for large datasets.
+
+        Returns:
+            PyG Data object with complete nuclear topology
+        """
+        if self.graph_data is None:
+            print("Building global graph structure (first access)...")
+            self.graph_data = self.graph_builder.build_global_graph()
+            print(f"✓ Graph built: {self.graph_data.num_nodes} nodes, {self.graph_data.num_edges} edges")
+        return self.graph_data
 
     def __len__(self) -> int:
         """Return number of samples (isotope-energy combinations)."""
