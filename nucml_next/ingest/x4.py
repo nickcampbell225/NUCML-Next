@@ -286,7 +286,11 @@ class X4Ingestor:
         """
         Extract point data from X4 database.
 
-        Attempts multiple query strategies to handle schema variations.
+        Attempts multiple query strategies to handle schema variations:
+        1. Official X4Pro schema (x4pro_ds + x4pro_x5z)
+        2. Legacy data_points table
+        3. Separate joined tables
+        4. Generic fallback
 
         Args:
             conn: SQLite connection
@@ -294,15 +298,30 @@ class X4Ingestor:
         Returns:
             Raw DataFrame from database
         """
-        # Inspect schema
+        # Inspect schema - check both tables and views
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cursor.fetchall()]
-        logger.info(f"Found tables: {', '.join(tables)}")
+        cursor.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')")
+        objects = cursor.fetchall()
+        tables = [name for name, obj_type in objects if obj_type == 'table']
+        views = [name for name, obj_type in objects if obj_type == 'view']
+        logger.info(f"Found tables: {', '.join(tables[:10])}..." if len(tables) > 10 else f"Found tables: {', '.join(tables)}")
 
-        # Strategy 1: Single data_points table (most common)
+        # Strategy 1: Official X4Pro schema (x4pro_ds + x4pro_x5z with JSON data)
+        if 'x4pro_ds' in tables and 'x4pro_x5z' in tables:
+            logger.info("Using X4Pro schema (x4pro_ds + x4pro_x5z)")
+            return self._extract_x4pro_json(conn)
+
+        # Strategy 2: X4Pro with c5dat table (if populated)
+        elif 'x4pro_ds' in tables and 'x4pro_c5dat' in tables:
+            # Check if c5dat has data
+            cursor.execute("SELECT COUNT(*) FROM x4pro_c5dat LIMIT 1")
+            if cursor.fetchone()[0] > 0:
+                logger.info("Using X4Pro schema (x4pro_ds + x4pro_c5dat)")
+                return self._extract_x4pro_c5dat(conn)
+
+        # Strategy 3: Legacy data_points table
         if 'data_points' in tables:
-            logger.info("Using data_points table")
+            logger.info("Using legacy data_points table")
             query = """
                 SELECT
                     entry_id,
@@ -319,7 +338,7 @@ class X4Ingestor:
             df = pd.read_sql_query(query, conn)
             return df
 
-        # Strategy 2: Separate tables (reactions, energies, cross_sections)
+        # Strategy 4: Separate tables (reactions, energies, cross_sections)
         elif 'reactions' in tables:
             logger.info("Using joined reactions/energies/cross_sections tables")
             query = """
@@ -341,7 +360,7 @@ class X4Ingestor:
             df = pd.read_sql_query(query, conn)
             return df
 
-        # Strategy 3: Generic fallback (inspect first table with relevant columns)
+        # Strategy 5: Generic fallback (inspect first table with relevant columns)
         else:
             logger.warning("Unknown schema. Attempting generic extraction from first suitable table.")
             for table in tables:
@@ -359,6 +378,165 @@ class X4Ingestor:
                     return df
 
             raise ValueError("Could not determine X4 database schema. Please check database structure.")
+
+    def _extract_x4pro_json(self, conn: sqlite3.Connection) -> pd.DataFrame:
+        """
+        Extract data from X4Pro schema using JSON format (x4pro_ds + x4pro_x5z).
+
+        The official X4Pro database stores cross-section data in JSON format within
+        the jx5z column of x4pro_x5z table. This method:
+        1. JOINs x4pro_ds (metadata) with x4pro_x5z (JSON data) on DatasetID
+        2. Parses c5data JSON to extract energy (x1), cross-section (y), uncertainty (dy)
+        3. Extracts Z, A from target isotope string (e.g., "U-235" → Z=92, A=235)
+
+        Args:
+            conn: SQLite connection
+
+        Returns:
+            DataFrame with columns: [DatasetID, Z, A, MT, Energy, Data, dData]
+        """
+        import json
+        import re
+
+        # Query to get dataset metadata and JSON data
+        # IMPORTANT: DatasetID is a string (e.g., "30649005S"), so quote properly
+        query = """
+            SELECT
+                ds.DatasetID,
+                ds.zTarg1 as Z,
+                ds.Targ1 as Target,
+                ds.MT,
+                x5.jx5z
+            FROM x4pro_ds ds
+            INNER JOIN x4pro_x5z x5 ON ds.DatasetID = x5.DatasetID
+            WHERE ds.zTarg1 IS NOT NULL
+              AND ds.MT IS NOT NULL
+        """
+
+        cursor = conn.cursor()
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        logger.info(f"Found {len(rows)} datasets with JSON data")
+
+        # Parse JSON and extract data points
+        all_points = []
+
+        for dataset_id, z, target, mt, jx5z_str in rows:
+            if not jx5z_str:
+                continue
+
+            try:
+                # Parse JSON
+                x5data = json.loads(jx5z_str)
+
+                # Extract A from target string (e.g., "U-235" → 235, "Al-27" → 27)
+                a_match = re.search(r'-(\d+)', target)
+                a = int(a_match.group(1)) if a_match else None
+
+                # Skip if we couldn't parse A
+                if a is None:
+                    logger.debug(f"Could not parse A from target: {target}")
+                    continue
+
+                # Extract c5data (corrected/computational data)
+                if 'c5data' not in x5data or not x5data['c5data']:
+                    continue
+
+                c5 = x5data['c5data']
+
+                # Extract energy (x1), cross-section (y), and uncertainty (dy)
+                if 'x1' not in c5 or 'y' not in c5:
+                    continue
+
+                energies = c5['x1'].get('x1', [])
+                cross_sections = c5['y'].get('y', [])
+                uncertainties = c5.get('dy', {}).get('dy', [None] * len(energies))
+
+                # Ensure all arrays have same length
+                n_points = min(len(energies), len(cross_sections))
+                if n_points == 0:
+                    continue
+
+                # Extend uncertainties if needed
+                if len(uncertainties) < n_points:
+                    uncertainties = uncertainties + [None] * (n_points - len(uncertainties))
+
+                # Create data points
+                for i in range(n_points):
+                    all_points.append({
+                        'DatasetID': dataset_id,
+                        'Z': z,
+                        'A': a,
+                        'MT': mt,
+                        'En': energies[i],
+                        'Data': cross_sections[i],
+                        'dData': uncertainties[i]
+                    })
+
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                logger.debug(f"Error parsing dataset {dataset_id}: {e}")
+                continue
+
+        if not all_points:
+            raise ValueError("No valid data points extracted from X4Pro JSON format")
+
+        df = pd.DataFrame(all_points)
+        logger.info(f"Extracted {len(df)} data points from {df['DatasetID'].nunique()} datasets")
+
+        return df
+
+    def _extract_x4pro_c5dat(self, conn: sqlite3.Connection) -> pd.DataFrame:
+        """
+        Extract data from X4Pro schema using c5dat table (x4pro_ds + x4pro_c5dat).
+
+        Alternative X4Pro format where corrected data is stored in x4pro_c5dat table
+        instead of JSON. Uses INNER JOIN on DatasetID.
+
+        Args:
+            conn: SQLite connection
+
+        Returns:
+            DataFrame with columns: [DatasetID, Z, A, MT, En, Data, dData]
+        """
+        import re
+
+        # INNER JOIN between metadata and data tables
+        # DatasetID must be quoted as it's a string
+        query = """
+            SELECT
+                ds.DatasetID,
+                ds.zTarg1 as Z,
+                ds.Targ1 as Target,
+                ds.MT,
+                dat.x1 as En,
+                dat.y as Data,
+                dat.dy as dData
+            FROM x4pro_ds ds
+            INNER JOIN x4pro_c5dat dat ON ds.DatasetID = dat.DatasetID
+            WHERE ds.zTarg1 IS NOT NULL
+              AND ds.MT IS NOT NULL
+              AND dat.x1 IS NOT NULL
+              AND dat.y IS NOT NULL
+        """
+
+        df = pd.read_sql_query(query, conn)
+        logger.info(f"Extracted {len(df)} data points from x4pro_c5dat")
+
+        # Extract A from target string
+        import re
+        def extract_a(target_str):
+            match = re.search(r'-(\d+)', target_str)
+            return int(match.group(1)) if match else None
+
+        df['A'] = df['Target'].apply(extract_a)
+        df = df.drop(columns=['Target'])
+
+        # Remove rows where A couldn't be parsed
+        df = df.dropna(subset=['A'])
+        df['A'] = df['A'].astype(int)
+
+        return df
 
     def _normalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -379,6 +557,7 @@ class X4Ingestor:
             'entry_id': 'Entry',
             'entry': 'Entry',
             'entryid': 'Entry',
+            'datasetid': 'Entry',  # X4Pro: DatasetID → Entry
 
             # Nuclear properties
             'target_z': 'Z',
@@ -393,17 +572,19 @@ class X4Ingestor:
             'mt': 'MT',
             'mt_code': 'MT',
 
-            # Data
+            # Data (including X4Pro naming conventions)
             'energy': 'Energy',
             'energy_value': 'Energy',
-            'en': 'Energy',
+            'en': 'Energy',        # X4Pro: En → Energy
 
             'xs': 'CrossSection',
+            'data': 'CrossSection',  # X4Pro: Data → CrossSection
             'cross_section': 'CrossSection',
             'sigma': 'CrossSection',
             'value': 'CrossSection',
 
             'dxs': 'Uncertainty',
+            'ddata': 'Uncertainty',  # X4Pro: dData → Uncertainty
             'uncertainty': 'Uncertainty',
             'error': 'Uncertainty',
             'd_cross_section': 'Uncertainty',

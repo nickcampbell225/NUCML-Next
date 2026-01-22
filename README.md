@@ -144,6 +144,36 @@ python scripts/ingest_exfor.py \
 
 If AME2020 is not provided, the ingestor uses SEMF (Semi-Empirical Mass Formula) approximations for common isotopes.
 
+### Technical: X4Pro Schema Support
+
+The X4Ingestor automatically detects and handles multiple X4Pro database schemas:
+
+1. **Official X4Pro Schema** (x4pro_ds + x4pro_x5z):
+   - Metadata in `x4pro_ds` table (DatasetID, Z, Target, MT, reaction codes)
+   - Cross-section data in JSON format (`x4pro_x5z.jx5z` column)
+   - Joins on `DatasetID` (string field, e.g., "30649005S")
+   - Parses `c5data` JSON: `x1` (energy), `y` (cross-section), `dy` (uncertainty)
+   - Extracts Z/A from target strings (e.g., "U-235" → Z=92, A=235)
+
+2. **Alternative X4Pro Schema** (x4pro_ds + x4pro_c5dat):
+   - Fallback for databases where c5dat table is populated instead of JSON
+
+3. **Legacy Schemas**:
+   - Simple `data_points` table
+   - Joined tables (reactions + energies + cross_sections)
+
+**Column Mapping:**
+```
+X4Pro → NUCML-Next
+─────────────────────
+DatasetID → Entry
+En        → Energy
+Data      → CrossSection
+dData     → Uncertainty
+```
+
+**Note:** DatasetID values are strings and must be quoted properly in SQL queries to avoid tokenization errors.
+
 ---
 
 ## Features
