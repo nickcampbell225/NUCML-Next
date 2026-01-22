@@ -207,7 +207,7 @@ class NucmlDataset(TorchDataset):
                 df = table.to_pandas().head(1000)
             else:
                 # Load full dataset with optimizations
-                print("  Reading partitioned dataset (this may take 1-2 minutes for large datasets)...")
+                print("  Reading partitioned dataset (this may take 5-10 minutes for large datasets)...")
                 start_total = time.time()
 
                 # Use PyArrow dataset API for partitioned data
@@ -219,14 +219,38 @@ class NucmlDataset(TorchDataset):
                 partition_columns = {'Z', 'A', 'MT'}  # Common partition columns
                 data_columns = [col for col in essential_columns if col not in partition_columns]
 
-                # Read table (blocking operation for large datasets)
-                print("  ⏳ Reading Parquet files...")
+                # Get fragments for progress tracking
+                filter_expr = self._build_dataset_filter(filters)
+                fragments = list(dataset.get_fragments(filter=filter_expr))
+                total_fragments = len(fragments)
+
+                print(f"  ⏳ Reading {total_fragments} partition fragments (showing progress every 10%)...")
                 start = time.time()
-                table = dataset.to_table(
-                    columns=data_columns if data_columns else None,  # Only request non-partition columns
-                    filter=self._build_dataset_filter(filters),
-                    use_threads=True  # Parallel read (multi-core)
-                )
+
+                # Read fragments in batches with progress updates
+                tables = []
+                report_interval = max(1, total_fragments // 10)  # Report every 10%
+
+                for i, fragment in enumerate(fragments):
+                    # Read fragment with column pruning
+                    fragment_table = fragment.to_table(
+                        columns=data_columns if data_columns else None,
+                        use_threads=True
+                    )
+                    tables.append(fragment_table)
+
+                    # Show progress every 10%
+                    if (i + 1) % report_interval == 0 or (i + 1) == total_fragments:
+                        percent = int(((i + 1) / total_fragments) * 100)
+                        elapsed = time.time() - start
+                        rate = (i + 1) / elapsed
+                        eta = (total_fragments - (i + 1)) / rate if rate > 0 else 0
+                        print(f"    Progress: {percent:3d}% ({i+1}/{total_fragments} fragments, {elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+
+                # Concatenate all tables
+                print("  ⏳ Concatenating fragments...")
+                import pyarrow.compute as pc
+                table = pa.concat_tables(tables)
                 read_time = time.time() - start
                 print(f"  ✓ Read complete: {read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
 
