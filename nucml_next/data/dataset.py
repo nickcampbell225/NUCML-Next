@@ -15,7 +15,6 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
-from tqdm import tqdm
 
 # Optional PyTorch imports (only required for graph mode)
 try:
@@ -208,70 +207,68 @@ class NucmlDataset(TorchDataset):
                 df = table.to_pandas().head(1000)
             else:
                 # Load full dataset with optimizations
-                # Read with progress bar
-                with tqdm(total=2, desc="Loading EXFOR database", unit="stage", ncols=80) as pbar:
-                    pbar.set_description("Reading Parquet dataset")
-                    start = time.time()
+                print("  Reading partitioned dataset (this may take 1-2 minutes for large datasets)...")
+                start_total = time.time()
 
-                    # Use PyArrow dataset API for partitioned data
-                    dataset = ds.dataset(str(data_path), format='parquet')
+                # Use PyArrow dataset API for partitioned data
+                dataset = ds.dataset(str(data_path), format='parquet')
 
-                    # For partitioned datasets, partition columns (Z, A, MT) are in directory names
-                    # and will be automatically added by PyArrow. We only need to request the
-                    # data columns that exist in the actual parquet files.
-                    partition_columns = {'Z', 'A', 'MT'}  # Common partition columns
-                    data_columns = [col for col in essential_columns if col not in partition_columns]
+                # For partitioned datasets, partition columns (Z, A, MT) are in directory names
+                # and will be automatically added by PyArrow. We only need to request the
+                # data columns that exist in the actual parquet files.
+                partition_columns = {'Z', 'A', 'MT'}  # Common partition columns
+                data_columns = [col for col in essential_columns if col not in partition_columns]
 
-                    table = dataset.to_table(
-                        columns=data_columns if data_columns else None,  # Only request non-partition columns
-                        filter=self._build_dataset_filter(filters),
-                        use_threads=True  # Parallel read (multi-core)
-                    )
+                # Read table (blocking operation for large datasets)
+                print("  ⏳ Reading Parquet files...")
+                start = time.time()
+                table = dataset.to_table(
+                    columns=data_columns if data_columns else None,  # Only request non-partition columns
+                    filter=self._build_dataset_filter(filters),
+                    use_threads=True  # Parallel read (multi-core)
+                )
+                read_time = time.time() - start
+                print(f"  ✓ Read complete: {read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
 
-                    read_time = time.time() - start
-                    pbar.set_postfix_str(f"{read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
-                    pbar.update(1)
+                # Convert to pandas (this is often the slowest part)
+                print("  ⏳ Converting to Pandas...")
+                start = time.time()
+                df = table.to_pandas()
+                convert_time = time.time() - start
+                print(f"  ✓ Conversion complete: {convert_time:.1f}s")
 
-                    # Convert to pandas (this is often the slowest part)
-                    pbar.set_description("Converting to Pandas")
-                    start = time.time()
-                    df = table.to_pandas()
-                    convert_time = time.time() - start
-                    pbar.set_postfix_str(f"{convert_time:.1f}s")
-                    pbar.update(1)
-
-                print(f"  ✓ Loaded in {read_time + convert_time:.1f}s total")
+                total_time = time.time() - start_total
+                print(f"  ✓ Total load time: {total_time:.1f}s")
 
         else:
             # Single Parquet file
             import time
 
-            # Read with progress bar
-            with tqdm(total=2, desc="Loading EXFOR database", unit="stage", ncols=80) as pbar:
-                pbar.set_description("Reading Parquet file")
-                start = time.time()
+            print("  Reading Parquet file...")
+            start_total = time.time()
 
-                table = pq.read_table(
-                    str(data_path),
-                    columns=essential_columns,  # Column pruning
-                    filters=self._build_filters(filters),  # Filter pushdown
-                    memory_map=True,  # Memory-mapped I/O (faster, less RAM)
-                    use_threads=True  # Parallel read
-                )
+            # Read table
+            print("  ⏳ Reading Parquet file...")
+            start = time.time()
+            table = pq.read_table(
+                str(data_path),
+                columns=essential_columns,  # Column pruning
+                filters=self._build_filters(filters),  # Filter pushdown
+                memory_map=True,  # Memory-mapped I/O (faster, less RAM)
+                use_threads=True  # Parallel read
+            )
+            read_time = time.time() - start
+            print(f"  ✓ Read complete: {read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
 
-                read_time = time.time() - start
-                pbar.set_postfix_str(f"{read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
-                pbar.update(1)
+            # Convert to pandas
+            print("  ⏳ Converting to Pandas...")
+            start = time.time()
+            df = table.to_pandas()
+            convert_time = time.time() - start
+            print(f"  ✓ Conversion complete: {convert_time:.1f}s")
 
-                # Convert to pandas
-                pbar.set_description("Converting to Pandas")
-                start = time.time()
-                df = table.to_pandas()
-                convert_time = time.time() - start
-                pbar.set_postfix_str(f"{convert_time:.1f}s")
-                pbar.update(1)
-
-            print(f"  ✓ Loaded in {read_time + convert_time:.1f}s total")
+            total_time = time.time() - start_total
+            print(f"  ✓ Total load time: {total_time:.1f}s")
 
         return df
 
