@@ -249,12 +249,31 @@ class NucmlDataset(TorchDataset):
                 report_interval = max(1, total_fragments // 10)  # Report every 10%
 
                 for i, fragment in enumerate(fragments):
-                    # Read fragment - PyArrow will automatically reconstruct partition columns
-                    # from directory names (Z=92/A=235/MT=18/ -> adds Z, A, MT columns)
+                    # Read fragment data (without partition columns initially)
                     fragment_table = fragment.to_table(
-                        columns=None,  # Read all columns (includes partition columns from path)
+                        columns=None,  # Read all data columns
                         use_threads=True
                     )
+
+                    # Extract partition values from fragment path
+                    # Fragment partition_expression contains values like: (Z == 92) and (A == 235) and (MT == 18)
+                    partition_dict = {}
+                    if hasattr(fragment, 'partition_expression') and fragment.partition_expression is not None:
+                        # Parse partition expression to extract Z, A, MT values
+                        expr_str = str(fragment.partition_expression)
+                        import re
+                        for key in ['Z', 'A', 'MT']:
+                            match = re.search(rf'{key} == (\d+)', expr_str)
+                            if match:
+                                partition_dict[key] = int(match.group(1))
+
+                    # Add partition columns as constant arrays
+                    num_rows = len(fragment_table)
+                    for key, value in partition_dict.items():
+                        fragment_table = fragment_table.append_column(
+                            key,
+                            pa.array([value] * num_rows, type=pa.int64())
+                        )
 
                     # Apply column pruning after reading (if needed)
                     if essential_columns:
