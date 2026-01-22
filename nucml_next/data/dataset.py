@@ -18,6 +18,7 @@ from pathlib import Path
 from torch.utils.data import Dataset
 import torch
 from torch_geometric.data import Data
+from tqdm import tqdm
 
 from nucml_next.data.graph_builder import GraphBuilder
 from nucml_next.data.tabular_projector import TabularProjector
@@ -177,44 +178,62 @@ class NucmlDataset(Dataset):
             else:
                 # Load full dataset with optimizations
                 import time
-                start = time.time()
 
-                # Read with memory mapping and column pruning
-                table = dataset.read(
-                    columns=essential_columns,
-                    use_threads=True  # Parallel read (multi-core)
-                )
+                # Read with progress bar
+                with tqdm(total=2, desc="Loading EXFOR database", unit="stage", ncols=80) as pbar:
+                    pbar.set_description("Reading Parquet file")
+                    start = time.time()
 
-                read_time = time.time() - start
-                print(f"  → Parquet read: {read_time:.1f}s ({table.nbytes / 1e9:.2f} GB)")
+                    # Read with memory mapping and column pruning
+                    table = dataset.read(
+                        columns=essential_columns,
+                        use_threads=True  # Parallel read (multi-core)
+                    )
 
-                # Convert to pandas (this is often the slowest part)
-                start = time.time()
-                df = table.to_pandas()
-                convert_time = time.time() - start
-                print(f"  → Arrow→Pandas conversion: {convert_time:.1f}s")
+                    read_time = time.time() - start
+                    pbar.set_postfix_str(f"{read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
+                    pbar.update(1)
+
+                    # Convert to pandas (this is often the slowest part)
+                    pbar.set_description("Converting to Pandas")
+                    start = time.time()
+                    df = table.to_pandas()
+                    convert_time = time.time() - start
+                    pbar.set_postfix_str(f"{convert_time:.1f}s")
+                    pbar.update(1)
+
+                print(f"  ✓ Loaded in {read_time + convert_time:.1f}s total")
 
         else:
             # Single Parquet file
             import time
-            start = time.time()
 
-            table = pq.read_table(
-                str(data_path),
-                columns=essential_columns,  # Column pruning
-                filters=self._build_filters(filters),  # Filter pushdown
-                memory_map=True,  # Memory-mapped I/O (faster, less RAM)
-                use_threads=True  # Parallel read
-            )
+            # Read with progress bar
+            with tqdm(total=2, desc="Loading EXFOR database", unit="stage", ncols=80) as pbar:
+                pbar.set_description("Reading Parquet file")
+                start = time.time()
 
-            read_time = time.time() - start
-            print(f"  → Parquet read: {read_time:.1f}s ({table.nbytes / 1e9:.2f} GB)")
+                table = pq.read_table(
+                    str(data_path),
+                    columns=essential_columns,  # Column pruning
+                    filters=self._build_filters(filters),  # Filter pushdown
+                    memory_map=True,  # Memory-mapped I/O (faster, less RAM)
+                    use_threads=True  # Parallel read
+                )
 
-            # Convert to pandas
-            start = time.time()
-            df = table.to_pandas()
-            convert_time = time.time() - start
-            print(f"  → Arrow→Pandas conversion: {convert_time:.1f}s")
+                read_time = time.time() - start
+                pbar.set_postfix_str(f"{read_time:.1f}s, {table.nbytes / 1e9:.2f} GB")
+                pbar.update(1)
+
+                # Convert to pandas
+                pbar.set_description("Converting to Pandas")
+                start = time.time()
+                df = table.to_pandas()
+                convert_time = time.time() - start
+                pbar.set_postfix_str(f"{convert_time:.1f}s")
+                pbar.update(1)
+
+            print(f"  ✓ Loaded in {read_time + convert_time:.1f}s total")
 
         return df
 

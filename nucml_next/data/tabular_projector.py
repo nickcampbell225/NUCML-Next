@@ -20,6 +20,7 @@ from typing import Literal, Optional, List
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
+from tqdm import tqdm
 
 
 class TabularProjector:
@@ -103,30 +104,38 @@ class TabularProjector:
             DataFrame with features: [Z, A, Energy, MT_2, MT_16, MT_18, MT_102, ...]
                                target: CrossSection
         """
-        # One-hot encode MT codes (returns scipy sparse matrix)
-        mt_onehot_sparse = self.encoder.transform(df[['MT']])
+        with tqdm(total=3, desc="Projecting to tabular format", unit="stage", ncols=80) as pbar:
+            # One-hot encode MT codes (returns scipy sparse matrix)
+            pbar.set_description("One-hot encoding MT codes")
+            mt_onehot_sparse = self.encoder.transform(df[['MT']])
+            pbar.update(1)
 
-        # Convert sparse matrix to pandas DataFrame with sparse arrays (memory efficient!)
-        mt_columns = [f'MT_{code}' for code in self.mt_codes]
+            # Convert sparse matrix to pandas DataFrame with sparse arrays (memory efficient!)
+            pbar.set_description("Creating sparse DataFrame")
+            mt_columns = [f'MT_{code}' for code in self.mt_codes]
 
-        # Create sparse DataFrame from scipy sparse matrix
-        # This keeps memory usage low while maintaining compatibility
-        mt_df = pd.DataFrame.sparse.from_spmatrix(
-            mt_onehot_sparse,
-            columns=mt_columns,
-            index=df.index
-        )
+            # Create sparse DataFrame from scipy sparse matrix
+            # This keeps memory usage low while maintaining compatibility
+            mt_df = pd.DataFrame.sparse.from_spmatrix(
+                mt_onehot_sparse,
+                columns=mt_columns,
+                index=df.index
+            )
+            pbar.update(1)
 
-        # Combine features
-        # Reset index to ensure alignment (dense + sparse DataFrames)
-        features = pd.concat([
-            df[['Z', 'A', 'Energy']].reset_index(drop=True),
-            mt_df.reset_index(drop=True),
-        ], axis=1)
+            # Combine features
+            pbar.set_description("Combining features")
+            # Reset index to ensure alignment (dense + sparse DataFrames)
+            features = pd.concat([
+                df[['Z', 'A', 'Energy']].reset_index(drop=True),
+                mt_df.reset_index(drop=True),
+            ], axis=1)
 
-        # Add target
-        features['CrossSection'] = df['CrossSection'].values
+            # Add target
+            features['CrossSection'] = df['CrossSection'].values
+            pbar.update(1)
 
+        print(f"  ✓ Projected {len(features):,} rows with {len(features.columns)} features")
         return features
 
     def _project_physics(self, df: pd.DataFrame) -> pd.DataFrame:
