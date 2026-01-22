@@ -194,14 +194,24 @@ class NucmlDataset(TorchDataset):
                 # Load only schema initially
                 print(f"⚠️  Lazy loading enabled. Data will be loaded on-demand.")
                 # For lazy loading, read a small subset to get schema
-                dataset = ds.dataset(str(data_path), format='parquet')
 
-                # Filter out partition columns for partitioned datasets
-                partition_columns = {'Z', 'A', 'MT'}
-                data_columns = [col for col in essential_columns if col not in partition_columns]
+                # Explicitly specify Hive partitioning so PyArrow knows about Z, A, MT columns
+                from pyarrow.dataset import HivePartitioning
+                partitioning = HivePartitioning(
+                    pa.schema([
+                        ('Z', pa.int64()),
+                        ('A', pa.int64()),
+                        ('MT', pa.int64())
+                    ])
+                )
+                dataset = ds.dataset(
+                    str(data_path),
+                    format='parquet',
+                    partitioning=partitioning
+                )
 
                 table = dataset.to_table(
-                    columns=data_columns if data_columns else None,
+                    columns=None,  # Read all columns
                     filter=self._build_dataset_filter(filters)
                 )
                 df = table.to_pandas().head(1000)
@@ -211,7 +221,20 @@ class NucmlDataset(TorchDataset):
                 start_total = time.time()
 
                 # Use PyArrow dataset API for partitioned data
-                dataset = ds.dataset(str(data_path), format='parquet')
+                # Explicitly specify Hive partitioning so PyArrow knows about Z, A, MT columns
+                from pyarrow.dataset import HivePartitioning
+                partitioning = HivePartitioning(
+                    pa.schema([
+                        ('Z', pa.int64()),
+                        ('A', pa.int64()),
+                        ('MT', pa.int64())
+                    ])
+                )
+                dataset = ds.dataset(
+                    str(data_path),
+                    format='parquet',
+                    partitioning=partitioning
+                )
 
                 # Get fragments for progress tracking
                 filter_expr = self._build_dataset_filter(filters)
