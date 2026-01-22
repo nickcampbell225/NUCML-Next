@@ -95,15 +95,29 @@ class DecisionTreeEvaluator:
         # Pandas sparse arrays are common with one-hot encoded MT codes
         X_df = df[self.feature_columns]
 
-        # Check if DataFrame contains sparse arrays
-        is_sparse = any(isinstance(dtype, pd.SparseDtype) for dtype in X_df.dtypes)
+        # Check if DataFrame contains sparse arrays (all MT_* columns should be sparse)
+        sparse_columns = [col for col in X_df.columns if isinstance(X_df[col].dtype, pd.SparseDtype)]
 
-        if is_sparse:
-            # Convert pandas sparse DataFrame to scipy sparse matrix (memory efficient)
-            # DecisionTree can handle sparse matrices directly
+        if len(sparse_columns) > 0:
+            # Convert to scipy sparse matrix (memory efficient)
+            # We need to handle mixed sparse/dense DataFrames
             import scipy.sparse as sp
-            X = sp.csr_matrix(X_df.sparse.to_coo())
-            print(f"  → Using sparse matrix format (memory efficient)")
+
+            try:
+                # Try to convert sparse columns to scipy sparse matrix
+                if len(sparse_columns) == len(X_df.columns):
+                    # All columns are sparse - use sparse accessor
+                    X = sp.csr_matrix(X_df.sparse.to_coo())
+                    print(f"  → Using sparse matrix format (memory efficient)")
+                else:
+                    # Mixed sparse/dense - convert sparse columns, densify, then combine
+                    # This is safer but uses more memory
+                    print(f"  → Converting {len(sparse_columns)} sparse columns to dense (mixed DataFrame)")
+                    X = X_df.values
+            except (AttributeError, ValueError) as e:
+                # Fallback to dense if sparse conversion fails
+                print(f"  → Sparse conversion failed, using dense format")
+                X = X_df.values
         else:
             # Dense data - use numpy array
             X = X_df.values
