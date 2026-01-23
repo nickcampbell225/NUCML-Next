@@ -25,6 +25,14 @@ from nucml_next.data.selection import (
     THRESHOLD_MT,
     FISSION_DETAILS_MT,
 )
+from nucml_next.data.mt_codes import (
+    MT_NAMES,
+    MT_CATEGORIES,
+    get_mt_name,
+    get_mt_category,
+    get_reactor_critical_mt_codes,
+    get_common_mt_codes,
+)
 
 # Re-export ingestion for backward compatibility
 from nucml_next.ingest import X4Ingestor, ingest_x4, AME2020Loader
@@ -47,6 +55,12 @@ __all__ = [
     "REACTOR_CORE_MT",
     "THRESHOLD_MT",
     "FISSION_DETAILS_MT",
+    "MT_NAMES",
+    "MT_CATEGORIES",
+    "get_mt_name",
+    "get_mt_category",
+    "get_reactor_critical_mt_codes",
+    "get_common_mt_codes",
     "X4Ingestor",
     "ingest_x4",
     "AME2020Loader",
