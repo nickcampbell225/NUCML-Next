@@ -13,13 +13,19 @@ Why Decision Trees Fail for Nuclear Data:
 This is the pedagogical "villain" that motivates deep learning.
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 import numpy as np
 import pandas as pd
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import joblib
+
+try:
+    from hyperopt import fmin, tpe, hp, STATUS_OK, Trials, space_eval
+    HYPEROPT_AVAILABLE = True
+except ImportError:
+    HYPEROPT_AVAILABLE = False
 
 
 class DecisionTreeEvaluator:
@@ -62,6 +68,192 @@ class DecisionTreeEvaluator:
         self.is_trained = False
         self.feature_columns = None
         self.metrics = {}
+
+    def optimize_hyperparameters(
+        self,
+        df: pd.DataFrame,
+        target_column: str = 'CrossSection',
+        exclude_columns: Optional[list] = None,
+        max_evals: int = 100,
+        cv_folds: int = 3,
+        test_size: float = 0.2,
+        verbose: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Optimize hyperparameters using Bayesian optimization (hyperopt).
+
+        This finds the optimal max_depth, min_samples_leaf, and other parameters
+        for the Decision Tree on the given dataset.
+
+        Args:
+            df: Training data (from NucmlDataset.to_tabular())
+            target_column: Name of target column
+            exclude_columns: Columns to exclude from features
+            max_evals: Maximum number of hyperparameter evaluations
+            cv_folds: Number of cross-validation folds
+            test_size: Fraction of data for final test set
+            verbose: Print optimization progress
+
+        Returns:
+            Dictionary with:
+                - best_params: Optimized hyperparameters
+                - best_score: Best cross-validation score
+                - trials: Hyperopt trials object for analysis
+
+        Example:
+            >>> dt = DecisionTreeEvaluator()
+            >>> result = dt.optimize_hyperparameters(df_train, max_evals=50)
+            >>> print(f"Optimal depth: {result['best_params']['max_depth']}")
+            >>> # Now create new model with optimal params
+            >>> dt_optimal = DecisionTreeEvaluator(**result['best_params'])
+            >>> dt_optimal.train(df_train)
+        """
+        if not HYPEROPT_AVAILABLE:
+            raise ImportError(
+                "hyperopt is required for hyperparameter optimization.\n"
+                "Install with: pip install hyperopt"
+            )
+
+        if verbose:
+            print("\n" + "=" * 80)
+            print("HYPERPARAMETER OPTIMIZATION - Decision Tree")
+            print("=" * 80)
+            print(f"Dataset size: {len(df):,} samples")
+            print(f"Max evaluations: {max_evals}")
+            print(f"Cross-validation folds: {cv_folds}")
+            print()
+
+        # Prepare features and target
+        if exclude_columns is None:
+            exclude_columns = [target_column, 'Isotope', 'Reaction']
+
+        feature_columns = [col for col in df.columns if col not in exclude_columns]
+
+        # Handle sparse DataFrames
+        X_df = df[feature_columns]
+        sparse_columns = [col for col in X_df.columns if isinstance(X_df[col].dtype, pd.SparseDtype)]
+
+        if len(sparse_columns) > 0:
+            import scipy.sparse as sp
+            try:
+                if len(sparse_columns) == len(X_df.columns):
+                    X = sp.csr_matrix(X_df.sparse.to_coo())
+                else:
+                    X = X_df.values
+            except (AttributeError, ValueError):
+                X = X_df.values
+        else:
+            X = X_df.values
+
+        y = df[target_column].values
+
+        # Log-transform target
+        y_log = np.log10(y + 1e-10)
+
+        # Split into train/test (hyperopt will use train for CV)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_log, test_size=test_size, random_state=42
+        )
+
+        # Define hyperparameter search space
+        space = {
+            'max_depth': hp.quniform('max_depth', 5, 30, 1),
+            'min_samples_split': hp.quniform('min_samples_split', 2, 100, 1),
+            'min_samples_leaf': hp.quniform('min_samples_leaf', 1, 50, 1),
+            'min_impurity_decrease': hp.loguniform('min_impurity_decrease', np.log(1e-8), np.log(1e-2)),
+            'max_features': hp.choice('max_features', ['sqrt', 'log2', None]),
+        }
+
+        # Define objective function for hyperopt
+        def objective(params):
+            # Convert float hyperparameters to int where needed
+            params['max_depth'] = int(params['max_depth'])
+            params['min_samples_split'] = int(params['min_samples_split'])
+            params['min_samples_leaf'] = int(params['min_samples_leaf'])
+
+            # Create model with these hyperparameters
+            model = DecisionTreeRegressor(
+                max_depth=params['max_depth'],
+                min_samples_split=params['min_samples_split'],
+                min_samples_leaf=params['min_samples_leaf'],
+                min_impurity_decrease=params['min_impurity_decrease'],
+                max_features=params['max_features'],
+                random_state=42,
+            )
+
+            # Cross-validation score (negative MSE, since hyperopt minimizes)
+            cv_scores = cross_val_score(
+                model, X_train, y_train,
+                cv=cv_folds,
+                scoring='neg_mean_squared_error',
+                n_jobs=-1
+            )
+
+            # Return mean CV score (hyperopt minimizes, so negate)
+            mean_cv_score = -cv_scores.mean()
+
+            return {
+                'loss': mean_cv_score,
+                'status': STATUS_OK,
+                'params': params,
+            }
+
+        # Run Bayesian optimization
+        trials = Trials()
+        if verbose:
+            print("Starting Bayesian optimization...")
+            print("-" * 80)
+
+        best = fmin(
+            fn=objective,
+            space=space,
+            algo=tpe.suggest,
+            max_evals=max_evals,
+            trials=trials,
+            verbose=verbose,
+            rstate=np.random.default_rng(42),
+        )
+
+        # Convert best parameters to correct types
+        best_params = space_eval(space, best)
+        best_params['max_depth'] = int(best_params['max_depth'])
+        best_params['min_samples_split'] = int(best_params['min_samples_split'])
+        best_params['min_samples_leaf'] = int(best_params['min_samples_leaf'])
+        best_params['random_state'] = 42
+
+        # Get best score from trials
+        best_trial = trials.best_trial
+        best_cv_score = -best_trial['result']['loss']
+
+        # Train final model with best params and evaluate on test set
+        final_model = DecisionTreeRegressor(**best_params)
+        final_model.fit(X_train, y_train)
+        y_test_pred = final_model.predict(X_test)
+
+        # Convert from log space
+        y_test_pred = 10 ** y_test_pred
+        y_test_orig = 10 ** y_test
+        test_mse = mean_squared_error(y_test_orig, y_test_pred)
+
+        if verbose:
+            print("\n" + "=" * 80)
+            print("OPTIMIZATION COMPLETE")
+            print("=" * 80)
+            print(f"Best cross-validation MSE (log): {best_cv_score:.6f}")
+            print(f"Test set MSE (original): {test_mse:.4e}")
+            print()
+            print("Optimal Hyperparameters:")
+            for key, value in best_params.items():
+                if key != 'random_state':
+                    print(f"  {key:25s}: {value}")
+            print("=" * 80)
+
+        return {
+            'best_params': best_params,
+            'best_cv_score': best_cv_score,
+            'test_mse': test_mse,
+            'trials': trials,
+        }
 
     def train(
         self,
