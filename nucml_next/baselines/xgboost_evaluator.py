@@ -47,6 +47,10 @@ class XGBoostEvaluator:
         learning_rate: float = 0.1,
         subsample: float = 0.8,
         colsample_bytree: float = 0.8,
+        gamma: float = 0.0,
+        reg_alpha: float = 0.0,
+        reg_lambda: float = 1.0,
+        min_child_weight: int = 1,
         random_state: int = 42,
     ):
         """
@@ -58,6 +62,10 @@ class XGBoostEvaluator:
             learning_rate: Learning rate (eta)
             subsample: Subsample ratio of training instances
             colsample_bytree: Subsample ratio of features
+            gamma: Minimum loss reduction for split (regularization)
+            reg_alpha: L1 regularization term on weights
+            reg_lambda: L2 regularization term on weights
+            min_child_weight: Minimum sum of instance weight needed in child
             random_state: Random seed
         """
         self.params = {
@@ -66,6 +74,10 @@ class XGBoostEvaluator:
             'learning_rate': learning_rate,
             'subsample': subsample,
             'colsample_bytree': colsample_bytree,
+            'gamma': gamma,
+            'reg_alpha': reg_alpha,
+            'reg_lambda': reg_lambda,
+            'min_child_weight': min_child_weight,
             'random_state': random_state,
             'objective': 'reg:squarederror',
             'tree_method': 'hist',  # Fast histogram-based method
