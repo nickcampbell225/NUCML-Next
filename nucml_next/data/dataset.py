@@ -147,12 +147,10 @@ class NucmlDataset(TorchDataset):
             # Default: use reactor physics selection
             self.selection = default_selection()
             self.filters = None  # Legacy filters not used
-            print("Using default DataSelection (reactor physics, neutrons, essential reactions)")
         elif selection is not None:
             # New physics-aware selection
             self.selection = selection
             self.filters = None
-            print(f"Using DataSelection:\n{self.selection}")
         else:
             # Legacy filters (still supported for evaluation/simple selections)
             self.selection = None
