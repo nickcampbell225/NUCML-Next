@@ -74,7 +74,7 @@ class DataSelection:
             - 'reactor_core': Essential for reactor physics (MT 2,4,16,18,102,103,107)
             - 'threshold_only': Reactions with energy thresholds (MT 16,17,103-107)
             - 'fission_details': Fission breakdown (MT 18,19,20,21,38)
-            - 'all_physical': All codes < 9000, excluding bookkeeping
+            - 'all_physical': All MT codes (bookkeeping removed by exclude_bookkeeping)
             - 'custom': Use custom_mt_codes list
         custom_mt_codes: Custom MT code list (used when mt_mode='custom')
         exclude_bookkeeping: Exclude MT 0,1 and MT >= 9000. Default: True
@@ -176,20 +176,17 @@ class DataSelection:
         elif self.mt_mode == 'fission_details':
             mt_codes = FISSION_DETAILS_MT.copy()
         elif self.mt_mode == 'all_physical':
-            # CRITICAL FIX: When projectile='neutron', filter to neutron MT codes
-            # This enables predicate pushdown at fragment level (90% fewer fragments!)
-            if self.projectile == 'neutron':
-                mt_codes = sorted(list(NEUTRON_MT_CODES))
-            else:
-                # All physical codes: 2-8999 (exclude bookkeeping)
-                # We'll filter at runtime based on available data
-                mt_codes = None  # Signal to not filter by MT in this mode
+            # 'all_physical' includes ALL MT codes (including bookkeeping)
+            # The exclude_bookkeeping parameter controls whether to filter them out
+            # This avoids double-filtering and gives users explicit control
+            mt_codes = None  # Signal to not filter by MT at this stage
         elif self.mt_mode == 'custom':
             mt_codes = self.custom_mt_codes.copy()
         else:
             raise ValueError(f"Unknown mt_mode: {self.mt_mode}")
 
-        # Apply exclusions if requested
+        # Apply bookkeeping exclusions if requested
+        # This is the ONLY place where bookkeeping codes are filtered
         if self.exclude_bookkeeping and mt_codes is not None:
             mt_codes = [mt for mt in mt_codes if mt not in BOOKKEEPING_MT and mt < 9000]
 
