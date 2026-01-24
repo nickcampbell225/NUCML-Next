@@ -178,22 +178,92 @@ df = quick_ingest()
 - Preserves experimental uncertainties
 - Standard schema: [Entry, Z, A, MT, Energy, CrossSection, Uncertainty]
 
-### AME2020 Integration (Optional)
+### AME2020/NUBASE2020 Integration (Recommended)
 
-For enhanced isotope features with real mass excess and binding energy data:
+NUCML-Next implements a **tier-based feature hierarchy** (Valdez 2021) using the complete AME2020 and NUBASE2020 nuclear data suite.
+
+**Required Data Files:**
+
+All files are available from https://www-nds.iaea.org/amdc/
 
 ```bash
-# Download AME2020
-wget https://www-nds.iaea.org/amdc/ame2020/mass_1.mas20.txt -O data/ame2020.txt
+cd data/
 
-# Use during ingestion
+# Core AME2020 files (required for Tiers B, C, E)
+wget https://www-nds.iaea.org/amdc/ame2020/mass_1.mas20.txt
+wget https://www-nds.iaea.org/amdc/ame2020/rct1.mas20.txt
+wget https://www-nds.iaea.org/amdc/ame2020/rct2_1.mas20.txt
+
+# NUBASE2020 file (required for Tier D)
+wget https://www-nds.iaea.org/amdc/ame2020/nubase_4.mas20.txt
+
+# Optional: Covariance data
+wget https://www-nds.iaea.org/amdc/ame2020/covariance.mas20.txt
+```
+
+**File-to-Feature Mapping:**
+
+| File | Features Provided | Tiers |
+|------|------------------|-------|
+| `mass_1.mas20.txt` | Mass excess, binding energy, nuclear radius | B, C |
+| `rct1.mas20.txt` | S(2n), S(2p), Q(α), Q(2β⁻) | C |
+| `rct2_1.mas20.txt` | S(1n), S(1p), all reaction Q-values | C, E |
+| `nubase_4.mas20.txt` | Spin, parity, half-life, isomeric states | D |
+| `covariance.mas20.txt` | Mass uncertainty correlations | (optional) |
+
+**Tier-Based Feature System:**
+
+- **Tier A** (Core): Z, A, Energy + particle-emission vector [n, p, d, t, He3, α] - 14 features
+- **Tier B** (Geometric): + Nuclear radius, kR parameter - 16 features
+- **Tier C** (Energetics): + Mass excess, binding energy, separation energies - 23 features
+- **Tier D** (Topological): + Spin, parity, valence, magic numbers - 32 features
+- **Tier E** (Complete): + All reaction Q-values - 40 features
+
+**Usage in Feature Generation:**
+
+```python
+from nucml_next.data import NucmlDataset
+from nucml_next.data.selection import DataSelection
+
+# Select features by tier (automatic AME2020 loading)
+selection = DataSelection(
+    projectile='neutron',
+    energy_min=1e-5,
+    energy_max=2e7,
+    mt_mode='all_physical',
+    tiers=['A', 'B', 'C']  # Core + Geometric + Energetics
+)
+
+dataset = NucmlDataset(
+    data_path='data/exfor_processed.parquet',
+    mode='tabular',
+    selection=selection
+)
+
+# Generate tier-based features
+df = dataset.to_tabular(mode='tier')
+# Returns DataFrame with 23 features including energetics from AME2020
+```
+
+**Basic Ingestion (Legacy):**
+
+For basic ingestion with only mass excess and binding energy:
+
+```python
 python scripts/ingest_exfor.py \
     --x4-db data/x4sqlite1.db \
     --output data/exfor_processed.parquet \
-    --ame2020 data/ame2020.txt
+    --ame2020 data/mass_1.mas20.txt
 ```
 
-If AME2020 is not provided, the ingestor uses SEMF (Semi-Empirical Mass Formula) approximations for common isotopes.
+If AME2020 files are not provided during ingestion, the system uses SEMF (Semi-Empirical Mass Formula) approximations for common isotopes. Full tier features are loaded on-demand during feature generation.
+
+**Citations:**
+
+If you use AME2020 or NUBASE2020 data, please cite:
+
+- **AME2020:** W.J. Huang et al., "The AME 2020 atomic mass evaluation," Chinese Phys. C **45**, 030002 (2021)
+- **NUBASE2020:** F.G. Kondev et al., "The NUBASE2020 evaluation of nuclear physics properties," Chinese Phys. C **45**, 030001 (2021)
 
 ### Technical: X4Pro Schema Support
 

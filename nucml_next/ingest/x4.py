@@ -63,10 +63,21 @@ logger = logging.getLogger(__name__)
 
 class AME2020Loader:
     """
-    Loader for AME2020 (Atomic Mass Evaluation 2020) isotopic data.
+    Legacy loader for AME2020 (Atomic Mass Evaluation 2020) isotopic data.
 
-    Provides mass excess and binding energy for nuclear enrichment.
-    Falls back to SEMF approximation if file not available.
+    **LEGACY:** This loader is used only for basic ingestion enrichment.
+    It loads a single file (mass_1.mas20.txt) with mass excess and binding energy.
+
+    **For tier-based features:** Use AME2020DataEnricher in nucml_next.data.enrichment
+    which loads all AME2020/NUBASE2020 files:
+    - mass_1.mas20.txt: Mass excess, binding energy
+    - rct1.mas20.txt: Separation energies (S_2n, S_2p, Q-values)
+    - rct2_1.mas20.txt: Separation energies (S_1n, S_1p, Q-values)
+    - nubase_4.mas20.txt: Spin, parity, half-life (Tier D)
+
+    Provides:
+    - Mass excess and binding energy for basic ingestion enrichment
+    - Falls back to SEMF approximation if file not available
     """
 
     def __init__(self, ame2020_path: Optional[str] = None):

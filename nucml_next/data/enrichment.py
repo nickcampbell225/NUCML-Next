@@ -5,31 +5,118 @@ AME2020/NUBASE2020 Data Enrichment
 Comprehensive loader for AME2020 and NUBASE2020 nuclear data tables.
 Supports tier-based feature enrichment following Valdez 2021 thesis.
 
+Data Files Required:
+--------------------
+All files available from: https://www-nds.iaea.org/amdc/
+
+1. mass_1.mas20.txt (462 KB)
+   - Mass excess in keV
+   - Binding energy in keV
+   - Binding energy per nucleon
+   - Source: AME2020 Atomic Mass Evaluation
+   - Coverage: 3,558 isotopes
+
+2. rct1.mas20.txt (500 KB)
+   - S(2n): Two-neutron separation energy
+   - S(2p): Two-proton separation energy
+   - Q(α): Alpha decay Q-value
+   - Q(2β⁻): Double beta-minus Q-value
+   - Q(ep): Electron capture + positron Q-value
+   - Q(β⁻n): Beta-delayed neutron Q-value
+   - Source: AME2020 reaction energies (part 1)
+
+3. rct2_1.mas20.txt (499 KB)
+   - S(1n): One-neutron separation energy
+   - S(1p): One-proton separation energy
+   - Q(4β⁻): Quadruple beta-minus Q-value
+   - Q(d,α): (d,α) reaction Q-value
+   - Q(p,α): (p,α) reaction Q-value
+   - Q(n,α): (n,α) reaction Q-value
+   - Source: AME2020 reaction energies (part 2)
+
+4. nubase_4.mas20.txt (5,868 lines)
+   - Nuclear spin (J)
+   - Parity (±1)
+   - Isomeric state levels
+   - Half-life (all time units: ys to Ey)
+   - Decay modes
+   - Source: NUBASE2020 nuclear structure evaluation
+   - Coverage: 3,558 ground states
+
+5. covariance.mas20.txt (24 MB) - OPTIONAL
+   - Mass uncertainty correlations
+   - Variance-covariance matrix
+   - Source: AME2020 statistical evaluation
+
+Download Instructions:
+-----------------------
+    cd data/
+    wget https://www-nds.iaea.org/amdc/ame2020/mass_1.mas20.txt
+    wget https://www-nds.iaea.org/amdc/ame2020/rct1.mas20.txt
+    wget https://www-nds.iaea.org/amdc/ame2020/rct2_1.mas20.txt
+    wget https://www-nds.iaea.org/amdc/ame2020/nubase_4.mas20.txt
+    wget https://www-nds.iaea.org/amdc/ame2020/covariance.mas20.txt  # optional
+
 File-to-Tier Mapping:
 ---------------------
-- mass_1.mas20: Mass excess, binding energy (Tier B, C)
-- rct1.mas20: S(2n), S(2p), Q(alpha), Q(2beta-), Q(ep), Q(beta-n) (Tier C)
-- rct2_1.mas20: S(1n), S(1p), Q(4beta-), Q(d,alpha), Q(p,alpha), Q(n,alpha) (Tier C, E)
-- nubase_4.mas20: Spin, parity, isomeric states (Tier D) - currently unavailable
-- covariance.mas20: Uncertainty covariances (optional)
+- Tier A: Z, A, Energy, MT (no enrichment needed) - 14 features
+- Tier B: + Nuclear radius, kR (requires mass_1) - 16 features
+- Tier C: + Mass excess, binding, separation energies (requires mass_1, rct1, rct2_1) - 23 features
+- Tier D: + Spin, parity, valence, magic numbers (requires nubase_4) - 32 features
+- Tier E: + All reaction Q-values (requires rct1, rct2_1) - 40 features
 
 Tier Hierarchy:
 ---------------
-- Tier A: Z, A, Energy, MT (no enrichment needed)
-- Tier B: + Radius/Radius-Ratio features
-- Tier C: + Mass Excess, Binding Energy, Separation Energies
-- Tier D: + Valence, P-Factor, Isomeric states, Spin, Parity
-- Tier E: + All reaction Q-values
+- Tier A (Core): Z, A, Energy + particle-emission vector [n, p, d, t, He3, α]
+- Tier B (Geometric): + Nuclear radius (R = 1.25×A^(1/3) fm), kR parameter
+- Tier C (Energetics): + Mass excess, binding energy, separation energies (S_1n, S_2n, S_1p, S_2p)
+- Tier D (Topological): + Spin, parity, valence nucleons, pairing factor, magic numbers
+- Tier E (Complete): + All reaction Q-values from rct1 and rct2_1 tables
+
+Data Coverage:
+--------------
+- Total isotopes: 3,558 ground states
+- Spin coverage: 93.2% (3,316 isotopes)
+- Parity coverage: 94.2% (3,350 isotopes)
+- Half-life coverage: 94.8% (3,374 isotopes)
+- Energetics coverage: 90-100% (varies by quantity)
 
 Usage:
 ------
     from nucml_next.data.enrichment import AME2020DataEnricher
 
+    # Load all AME2020/NUBASE2020 data files
     enricher = AME2020DataEnricher(data_dir='data/')
     enricher.load_all()
 
+    # Check available tiers
+    print(enricher.get_available_tiers())  # ['A', 'B', 'C', 'D', 'E']
+
     # Get enriched data for specific isotope
     u235_data = enricher.get_isotope_data(Z=92, A=235, tiers=['B', 'C'])
+
+    # Enrich DataFrame with tier-based features
+    import pandas as pd
+    df = pd.DataFrame({'Z': [92, 94], 'A': [235, 239]})
+    enriched = enricher.enrich_dataframe(df, tiers=['C', 'D'])
+
+Citations:
+----------
+If you use AME2020 or NUBASE2020 data, please cite:
+
+    AME2020:
+    W.J. Huang, M. Wang, F.G. Kondev, G. Audi, and S. Naimi,
+    "The AME 2020 atomic mass evaluation (I). Evaluation of input data,
+    and adjustment procedures," Chinese Phys. C 45, 030002 (2021).
+
+    M. Wang, W.J. Huang, F.G. Kondev, G. Audi, and S. Naimi,
+    "The AME 2020 atomic mass evaluation (II). Tables, graphs and references,"
+    Chinese Phys. C 45, 030003 (2021).
+
+    NUBASE2020:
+    F.G. Kondev, M. Wang, W.J. Huang, S. Naimi, and G. Audi,
+    "The NUBASE2020 evaluation of nuclear physics properties,"
+    Chinese Phys. C 45, 030001 (2021).
 """
 
 import logging
