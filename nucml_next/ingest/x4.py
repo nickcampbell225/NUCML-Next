@@ -821,9 +821,20 @@ class X4Ingestor:
         This method calculates the expected partition count and uses the
         configured max_partitions limit to handle large datasets.
 
+        Note:
+            If output path already exists, it will be deleted and recreated to
+            prevent accumulation of duplicate partition files from multiple ingestion runs.
+
         Args:
             df: DataFrame to write
         """
+        # Clean up existing output directory to prevent duplicate partitions
+        # PyArrow's 'overwrite_or_ignore' doesn't delete old files, causing duplicates
+        if self.output_path.exists():
+            logger.info(f"Removing existing Parquet directory: {self.output_path}")
+            import shutil
+            shutil.rmtree(self.output_path)
+
         # Calculate expected number of partitions
         if self.partitioning:
             n_partitions = df[self.partitioning].drop_duplicates().shape[0]
