@@ -844,7 +844,7 @@ class X4Ingestor:
         )
 
     def _print_summary(self, df: pd.DataFrame):
-        """Print dataset summary statistics with tier-based enrichment coverage."""
+        """Print dataset summary statistics (lean EXFOR data only)."""
         logger.info("="*70)
         logger.info("Dataset Summary")
         logger.info("="*70)
@@ -853,45 +853,6 @@ class X4Ingestor:
         logger.info(f"Unique reactions (MT):   {df['MT'].nunique()}")
         logger.info(f"Energy range:            {df['Energy'].min():.2e} - {df['Energy'].max():.2e} eV")
         logger.info(f"Points with uncertainty: {df['Uncertainty'].notna().sum():,}")
-
-        # Report enrichment coverage by tier
-        if self.ame_enricher is not None:
-            logger.info("-" * 70)
-            logger.info("AME2020/NUBASE2020 Enrichment Coverage")
-            logger.info("-" * 70)
-
-            # Tier B/C: Mass data
-            if 'Mass_Excess_keV' in df.columns:
-                coverage = df['Mass_Excess_keV'].notna().sum()
-                pct = 100 * coverage / len(df) if len(df) > 0 else 0
-                logger.info(f"Tier B/C (Mass):         {coverage:,} / {len(df):,} points ({pct:.1f}%)")
-
-            # Tier C: Separation energies
-            if 'S_1n' in df.columns:
-                coverage = df['S_1n'].notna().sum()
-                pct = 100 * coverage / len(df) if len(df) > 0 else 0
-                logger.info(f"Tier C (S_1n):           {coverage:,} / {len(df):,} points ({pct:.1f}%)")
-
-            # Tier D: Nuclear structure
-            if 'Spin' in df.columns:
-                coverage = df['Spin'].notna().sum()
-                pct = 100 * coverage / len(df) if len(df) > 0 else 0
-                logger.info(f"Tier D (Spin):           {coverage:,} / {len(df):,} points ({pct:.1f}%)")
-
-            if 'Half_Life_s' in df.columns:
-                coverage = df['Half_Life_s'].notna().sum()
-                pct = 100 * coverage / len(df) if len(df) > 0 else 0
-                logger.info(f"Tier D (Half-life):      {coverage:,} / {len(df):,} points ({pct:.1f}%)")
-
-            # Tier E: Q-values
-            if 'Q_alpha' in df.columns:
-                coverage = df['Q_alpha'].notna().sum()
-                pct = 100 * coverage / len(df) if len(df) > 0 else 0
-                logger.info(f"Tier E (Q_alpha):        {coverage:,} / {len(df):,} points ({pct:.1f}%)")
-
-            available_tiers = self.ame_enricher.get_available_tiers()
-            logger.info(f"Available tiers:         {available_tiers}")
-
         logger.info("="*70)
 
 
@@ -903,19 +864,17 @@ def ingest_x4(
     max_partitions: int = 10000,
 ) -> pd.DataFrame:
     """
-    Convenience function for X4 ingestion with full AME2020/NUBASE2020 enrichment.
+    Convenience function for lean X4 ingestion (EXFOR data only).
 
     Args:
         x4_db_path: Path to X4Pro SQLite database
-        output_path: Output Parquet path
-        ame2020_dir: Optional directory containing AME2020/NUBASE2020 *.mas20.txt files
-                    If provided, all 5 files will be loaded and merged into Parquet:
-                    - mass_1.mas20.txt, rct1.mas20.txt, rct2_1.mas20.txt,
-                      nubase_4.mas20.txt, covariance.mas20.txt
+        output_path: Output Parquet path (default: data/exfor_processed.parquet)
+        ame2020_dir: DEPRECATED - This parameter is ignored.
+                    AME enrichment now happens during feature generation.
         max_partitions: Maximum number of partitions (default: 10000 for full EXFOR)
 
     Returns:
-        Processed DataFrame with all EXFOR data + AME2020/NUBASE2020 enrichment
+        Processed DataFrame with EXFOR data (lean, no AME duplication)
 
     Example:
         >>> # Basic ingestion (no enrichment)
