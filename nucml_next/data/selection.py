@@ -18,7 +18,7 @@ Design Philosophy:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Tuple, Set
+from typing import Optional, List, Tuple, Set, Literal
 import numpy as np
 
 
@@ -77,6 +77,96 @@ BOOKKEEPING_MT = {0}  # Only MT=0 is truly undefined/non-standard
 
 
 @dataclass
+class TransformationConfig:
+    """
+    Configuration for data transformations during ML pipeline.
+
+    Controls log-scaling and standardization/normalization of features and targets.
+    All transformations are reversible for predictions.
+
+    Attributes:
+        # Target (cross-section) transformations
+        log_target: Enable log₁₀ transform for cross-sections. Default: True
+        target_epsilon: Epsilon for log(σ + ε) to prevent log(0). Default: 1e-10
+
+        # Energy transformations
+        log_energy: Enable log₁₀ transform for energies. Default: True
+
+        # Feature standardization
+        scaler_type: Type of feature scaling. Options:
+            - 'standard': Z-score normalization (X-μ)/σ [Default]
+            - 'minmax': Min-max scaling to [0,1]
+            - 'robust': Robust scaling using median and IQR
+            - 'none': No scaling (use raw features)
+
+        # Custom feature selection for scaling
+        scale_features: Columns to scale. None = auto-detect numeric columns
+
+    Example:
+        >>> # Default: Log-transform everything, Z-score standardization
+        >>> config = TransformationConfig()
+
+        >>> # No transformations (raw data)
+        >>> config = TransformationConfig(
+        ...     log_target=False,
+        ...     log_energy=False,
+        ...     scaler_type='none'
+        ... )
+
+        >>> # MinMax scaling with custom epsilon
+        >>> config = TransformationConfig(
+        ...     scaler_type='minmax',
+        ...     target_epsilon=1e-8,
+        ...     scale_features=['Z', 'A', 'N', 'Mass_Excess_MeV']
+        ... )
+    """
+
+    # Target transformations
+    log_target: bool = True
+    target_epsilon: float = 1e-10
+    log_base: Literal[10, 'e', 2] = 10  # Log base: 10, 'e' (natural), or 2
+
+    # Energy transformations
+    log_energy: bool = True
+    energy_log_base: Literal[10, 'e', 2] = 10
+
+    # Feature scaling
+    scaler_type: Literal['standard', 'minmax', 'robust', 'none'] = 'standard'
+    scale_features: Optional[List[str]] = None
+
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Validate epsilon
+        if self.target_epsilon <= 0:
+            raise ValueError(f"target_epsilon must be positive, got {self.target_epsilon}")
+
+        # Validate scaler_type
+        valid_scalers = ['standard', 'minmax', 'robust', 'none']
+        if self.scaler_type not in valid_scalers:
+            raise ValueError(f"scaler_type must be one of {valid_scalers}, got '{self.scaler_type}'")
+
+        # Validate log bases
+        valid_bases = [10, 'e', 2]
+        if self.log_base not in valid_bases:
+            raise ValueError(f"log_base must be one of {valid_bases}, got {self.log_base}")
+        if self.energy_log_base not in valid_bases:
+            raise ValueError(f"energy_log_base must be one of {valid_bases}, got {self.energy_log_base}")
+
+    def __repr__(self) -> str:
+        """Readable representation of transformation configuration."""
+        lines = [
+            "TransformationConfig(",
+            f"  Target: log={self.log_target}, base={self.log_base}, epsilon={self.target_epsilon:.1e}",
+            f"  Energy: log={self.log_energy}, base={self.energy_log_base}",
+            f"  Features: scaler={self.scaler_type}",
+        ]
+        if self.scale_features:
+            lines.append(f"  Scale features: {self.scale_features[:5]}{'...' if len(self.scale_features) > 5 else ''}")
+        lines.append(")")
+        return "\n".join(lines)
+
+
+@dataclass
 class DataSelection:
     """
     Configuration for physics-aware data selection.
@@ -110,6 +200,9 @@ class DataSelection:
             - 'D': + Topological (spin, parity, valence, magic numbers)
             - 'E': + Complete Q-values (all reaction energetics)
                          Default: ['A'] (core features only, equivalent to 'naive' mode)
+        transformation_config: Configuration for data transformations (log-scaling,
+                              standardization). Default: TransformationConfig()
+                              (log₁₀ transforms enabled, Z-score standardization)
 
     Example:
         >>> # Default: reactor physics, neutrons only, Tier A features
@@ -151,6 +244,9 @@ class DataSelection:
 
     # Feature tier selection (Valdez 2021 hierarchy)
     tiers: List[str] = field(default_factory=lambda: ['A'])  # Default: Core features only
+
+    # Transformation configuration
+    transformation_config: TransformationConfig = field(default_factory=TransformationConfig)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -261,6 +357,12 @@ class DataSelection:
 
         # Show tier selection
         lines.append(f"  Feature tiers: {self.tiers}")
+
+        # Show transformation config
+        if self.transformation_config:
+            lines.append(f"  Transformations: log_target={self.transformation_config.log_target}, "
+                        f"log_energy={self.transformation_config.log_energy}, "
+                        f"scaler={self.transformation_config.scaler_type}")
 
         if self.holdout_isotopes:
             lines.append(f"  Holdout isotopes: {self.holdout_isotopes}")

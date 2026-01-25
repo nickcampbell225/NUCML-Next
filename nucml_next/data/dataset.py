@@ -914,12 +914,15 @@ class NucmlDataset(TorchDataset):
             logger.info(f"Auto-detected {len(feature_columns)} standardizable features")
             logger.info(f"  Features: {feature_columns[:5]}...")
 
-        # Create pipeline
-        pipeline = TransformationPipeline()
+        # Create pipeline with config from DataSelection
+        pipeline = TransformationPipeline(config=self.selection.transformation_config)
 
         # Fit on current dataset
         # Note: User should split train/test BEFORE fitting to avoid data leakage
         logger.info("Fitting transformation pipeline on dataset...")
+        logger.info(f"  Using transformation config: scaler={self.selection.transformation_config.scaler_type}, "
+                   f"log_target={self.selection.transformation_config.log_target}, "
+                   f"log_energy={self.selection.transformation_config.log_energy}")
         logger.warning(
             "⚠️  Pipeline fitted on entire dataset. "
             "For proper ML workflow, fit only on training split!"
