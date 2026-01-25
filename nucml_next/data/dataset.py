@@ -227,10 +227,11 @@ class NucmlDataset(TorchDataset):
         """
         # Essential columns needed for NUCML-Next (column pruning optimization)
         # This can reduce read time by 50%+ for wide tables
-        # NOTE: Z, A, MT come from partition metadata (Hive partitioning), not data columns
+        # NOTE: For partitioned data, Z, A, MT come from Hive partition metadata
+        # NOTE: For single-file data, Z, A, MT must be in the column list
         # NOTE: AME columns (Mass_Excess_keV, etc.) are added later via on-demand enrichment
         essential_columns = [
-            'Entry', 'N', 'Energy', 'CrossSection', 'Uncertainty'
+            'Entry', 'Z', 'A', 'N', 'MT', 'Energy', 'CrossSection', 'Uncertainty'
         ]
 
         # Check if partitioned dataset (directory) or single file
