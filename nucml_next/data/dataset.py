@@ -769,9 +769,25 @@ class NucmlDataset(TorchDataset):
             needs_enrichment = any(tier in tiers for tier in ['B', 'C', 'D', 'E'])
 
             if needs_enrichment:
-                # Load AME2020 data
-                enricher = AME2020DataEnricher(data_dir='data/')
-                enricher.load_all()
+                # Load AME2020 data (try common paths)
+                data_dirs = ['../data', 'data', './data']
+                enricher = None
+                for data_dir in data_dirs:
+                    try:
+                        enricher = AME2020DataEnricher(data_dir=data_dir)
+                        enricher.load_all()
+                        logger.debug(f"Loaded AME2020 data from {data_dir}")
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if enricher is None:
+                    logger.warning(
+                        "AME2020 data not found. Tier B/C/D/E features will be missing. "
+                        "Please ensure data files are in '../data', 'data', or './data' directory."
+                    )
+                    enricher = None
+
                 generator = FeatureGenerator(enricher=enricher)
             else:
                 # No enrichment needed for Tier A only

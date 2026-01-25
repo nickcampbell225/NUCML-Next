@@ -199,7 +199,7 @@ class FeatureGenerator:
             use_particle_emission: If True, use particle-emission vector instead of one-hot MT
 
         Returns:
-            DataFrame with generated features
+            DataFrame with generated features (ONLY columns for requested tiers)
 
         Example:
             >>> # NucmlDataset automatically enriches based on requested tiers
@@ -233,7 +233,68 @@ class FeatureGenerator:
         if 'E' in tiers:
             result = self._add_tier_e_features(result)
 
+        # CRITICAL: Filter to keep ONLY columns belonging to requested tiers
+        # This removes unwanted AME/NUBASE columns that were in the input dataframe
+        allowed_columns = self._get_tier_columns(tiers, use_particle_emission)
+
+        # Keep only allowed columns that exist in the result
+        final_columns = [col for col in allowed_columns if col in result.columns]
+        result = result[final_columns]
+
         return result
+
+    def _get_tier_columns(self, tiers: List[str], use_particle_emission: bool = True) -> List[str]:
+        """
+        Get the list of column names that belong to the specified tiers.
+
+        Args:
+            tiers: List of tiers (e.g., ['A', 'C'])
+            use_particle_emission: Whether particle emission vector is used
+
+        Returns:
+            List of column names for the requested tiers
+        """
+        columns = set()
+
+        # Always include these metadata columns for downstream processing
+        columns.update(['Entry', 'MT', 'CrossSection', 'Uncertainty'])
+
+        # Tier A: Core nuclear coordinates and particle vector
+        if 'A' in tiers or len(tiers) == 0:
+            columns.update(['Z', 'A', 'N', 'Energy'])
+            if use_particle_emission:
+                columns.update([
+                    'out_n', 'out_p', 'out_a', 'out_g', 'out_f',
+                    'out_t', 'out_h', 'out_d', 'is_met'
+                ])
+
+        # Tier B: Geometric features
+        if 'B' in tiers:
+            columns.update(['R_fm', 'kR'])
+
+        # Tier C: Energetics (AME2020 mass/binding/separation)
+        if 'C' in tiers:
+            columns.update([
+                'Mass_Excess_MeV', 'Binding_Energy_MeV', 'Binding_Per_Nucleon_MeV',
+                'S_1n_MeV', 'S_2n_MeV', 'S_1p_MeV', 'S_2p_MeV'
+            ])
+
+        # Tier D: Topological features (NUBASE2020 nuclear structure)
+        if 'D' in tiers:
+            columns.update([
+                'Spin', 'Parity', 'Isomer_Level', 'Half_Life_s',
+                'Valence_N', 'Valence_P', 'P_Factor',
+                'Shell_Closure_N', 'Shell_Closure_P'
+            ])
+
+        # Tier E: Complete Q-values (AME2020 reaction energetics)
+        if 'E' in tiers:
+            columns.update([
+                'Q_alpha', 'Q_2beta_minus', 'Q_ep', 'Q_beta_n',
+                'Q_4beta_minus', 'Q_d_alpha', 'Q_p_alpha', 'Q_n_alpha'
+            ])
+
+        return sorted(columns)
 
     def _add_tier_a_features(
         self,
