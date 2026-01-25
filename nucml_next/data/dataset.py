@@ -549,12 +549,32 @@ class NucmlDataset(TorchDataset):
 
             # Merge AME data into self.df (left join on Z, A)
             print(f"  Merging AME data with EXFOR measurements...")
+
+            # CRITICAL: Filter to ground states only (Isomer_Level == 0) to avoid duplicates
+            # The enrichment table includes both ground states and isomeric states for the same (Z, A).
+            # Merging without filtering would duplicate EXFOR measurements.
+            if 'Isomer_Level' in enrichment_table.columns:
+                enrichment_table = enrichment_table[enrichment_table['Isomer_Level'] == 0].copy()
+                print(f"    Filtered to {len(enrichment_table)} ground-state isotopes (Isomer_Level == 0)")
+
             enrich_cols = [col for col in enrichment_table.columns if col not in ['N']]
             enrichment_data = enrichment_table[enrich_cols].copy()
 
             initial_cols = len(self.df.columns)
+            initial_rows = len(self.df)
             self.df = self.df.merge(enrichment_data, on=['Z', 'A'], how='left')
             added_cols = len(self.df.columns) - initial_cols
+            final_rows = len(self.df)
+
+            # Verify no row duplication occurred
+            if final_rows != initial_rows:
+                raise ValueError(
+                    f"❌ ERROR: AME enrichment caused row duplication!\n"
+                    f"   Before merge: {initial_rows:,} rows\n"
+                    f"   After merge: {final_rows:,} rows\n"
+                    f"   This indicates duplicate (Z, A) entries in enrichment table.\n"
+                    f"   Please report this issue."
+                )
 
             # Report coverage
             n_enriched = self.df['Mass_Excess_keV'].notna().sum() if 'Mass_Excess_keV' in self.df.columns else 0
