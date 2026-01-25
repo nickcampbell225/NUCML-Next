@@ -315,25 +315,29 @@ class NucmlDataset(TorchDataset):
                         use_threads=True
                     )
 
-                    # Extract partition values from fragment path
+                    # Extract partition values from fragment path if not already in data
                     # Fragment partition_expression contains values like: (Z == 92) and (A == 235) and (MT == 18)
+                    # Note: Newer Parquet files store Z, A, MT as dictionary columns in the data itself
                     partition_dict = {}
                     if hasattr(fragment, 'partition_expression') and fragment.partition_expression is not None:
                         # Parse partition expression to extract Z, A, MT values
                         expr_str = str(fragment.partition_expression)
                         import re
                         for key in ['Z', 'A', 'MT']:
-                            match = re.search(rf'{key} == (\d+)', expr_str)
-                            if match:
-                                partition_dict[key] = int(match.group(1))
+                            # Only add from partition if not already in data
+                            if key not in fragment_table.column_names:
+                                match = re.search(rf'{key} == (\d+)', expr_str)
+                                if match:
+                                    partition_dict[key] = int(match.group(1))
 
-                    # Add partition columns as constant arrays
+                    # Add partition columns as constant arrays (only if missing from data)
                     num_rows = len(fragment_table)
                     for key, value in partition_dict.items():
-                        fragment_table = fragment_table.append_column(
-                            key,
-                            pa.array([value] * num_rows, type=pa.int64())
-                        )
+                        if key not in fragment_table.column_names:
+                            fragment_table = fragment_table.append_column(
+                                key,
+                                pa.array([value] * num_rows, type=pa.int64())
+                            )
 
                     # Apply column pruning after reading (if needed)
                     if essential_columns:
@@ -520,16 +524,9 @@ class NucmlDataset(TorchDataset):
             enricher = AME2020DataEnricher(data_dir=ame_dir)
 
             # Load all AME files into memory (they're tiny ~MBs vs GB for EXFOR)
-            # This is faster than conditional loading and ensures all data is available
+            # This loads all available files and merges them into enrichment_table
             print(f"  Loading all AME2020/NUBASE2020 files into memory...")
-            enricher.load_mass_file()      # mass_1.mas20.txt (~300 KB)
-            enricher.load_rct1_file()      # rct1.mas20.txt (~150 KB)
-            enricher.load_rct2_file()      # rct2_1.mas20.txt (~150 KB)
-            enricher.load_nubase_file()    # nubase_4.mas20.txt (~500 KB)
-            # Note: covariance file not needed for tier features
-
-            # Get enrichment table
-            enrichment_table = enricher.enrichment_table
+            enrichment_table = enricher.load_all()
 
             if enrichment_table is None or len(enrichment_table) == 0:
                 print("  ⚠️  AME enrichment table is empty - skipping enrichment")
