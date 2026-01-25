@@ -283,7 +283,7 @@ class X4Ingestor:
         x4_db_path: str,
         output_path: str = 'data/exfor_processed.parquet',
         ame2020_dir: Optional[str] = None,
-        partitioning: List[str] = ['Z', 'A', 'MT'],
+        partitioning: List[str] = [],  # No partitioning by default (changed from ['Z', 'A', 'MT'])
         max_partitions: int = 10000,
     ):
         """
@@ -295,10 +295,12 @@ class X4Ingestor:
             ame2020_dir: DEPRECATED - AME enrichment now happens during feature generation.
                         This parameter is kept for backward compatibility but ignored.
                         AME files are loaded on-demand by NucmlDataset during feature generation.
-            partitioning: Partition columns for Parquet output (default: ['Z', 'A', 'MT'])
+            partitioning: Partition columns for Parquet output (default: [] = no partitioning).
+                         Options: [] (no partitioning), ['Z'] (by element), ['Z', 'A'] (by isotope).
+                         WARNING: ['Z', 'A', 'MT'] creates 10K+ tiny files and 10-minute load times!
+                         For datasets <10GB, no partitioning is recommended (fastest load, simplest).
             max_partitions: Maximum number of partitions allowed (default: 10000)
-                           The full EXFOR database can have >1000 unique Z/A/MT combinations.
-                           PyArrow's default limit is 1024, which is insufficient for full EXFOR.
+                           Only relevant if partitioning is enabled. Allows >1024 partitions.
 
         Note:
             This ingestor now produces LEAN Parquet files containing only EXFOR measurements.
