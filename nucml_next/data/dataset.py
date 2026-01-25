@@ -754,10 +754,9 @@ class NucmlDataset(TorchDataset):
         """
         if mode == 'tier':
             # Use FeatureGenerator for tier-based features
-            from nucml_next.data.enrichment import AME2020DataEnricher
             from nucml_next.data.features import FeatureGenerator
 
-            # Initialize enricher if needed for Tiers B+
+            # Determine which tiers to use
             if tiers is None:
                 # Use tiers from DataSelection if available
                 if self.selection is not None:
@@ -765,33 +764,9 @@ class NucmlDataset(TorchDataset):
                 else:
                     tiers = ['A']  # Default to core features
 
-            # Check if we need enrichment (Tiers B, C, D, E)
-            needs_enrichment = any(tier in tiers for tier in ['B', 'C', 'D', 'E'])
-
-            if needs_enrichment:
-                # Load AME2020 data (try common paths)
-                data_dirs = ['../data', 'data', './data']
-                enricher = None
-                for data_dir in data_dirs:
-                    try:
-                        enricher = AME2020DataEnricher(data_dir=data_dir)
-                        enricher.load_all()
-                        logger.debug(f"Loaded AME2020 data from {data_dir}")
-                        break
-                    except FileNotFoundError:
-                        continue
-
-                if enricher is None:
-                    logger.warning(
-                        "AME2020 data not found. Tier B/C/D/E features will be missing. "
-                        "Please ensure data files are in '../data', 'data', or './data' directory."
-                    )
-                    enricher = None
-
-                generator = FeatureGenerator(enricher=enricher)
-            else:
-                # No enrichment needed for Tier A only
-                generator = FeatureGenerator(enricher=None)
+            # Note: No enricher needed - self.df already has AME columns from NucmlDataset loading
+            # FeatureGenerator will compute derived features from existing columns
+            generator = FeatureGenerator(enricher=None)
 
             # Generate tier-based features
             df = self.df.copy()
