@@ -33,12 +33,12 @@ For 16.9M measurements × 117 MT codes × 8 bytes (float64):
 NUCML-Next now uses pandas sparse arrays for one-hot encoding:
 
 ```python
-# This now uses sparse encoding automatically (no code changes needed)
-df_naive = dataset.to_tabular(mode='naive')
+# Tier-based features use particle emission vectors (no memory issues)
+df = dataset.to_tabular()
 
 # Memory usage:
-# - Before: 14.7 GB (MemoryError!)
-# - After:  ~135 MB (110x reduction!)
+# - Tier-based features: Compact particle vectors instead of one-hot MT codes
+# - No memory explosion - efficient by design!
 ```
 
 **Technical Details:**
@@ -195,8 +195,8 @@ dataset = NucmlDataset(
     # Automatic optimizations: column pruning, memory mapping, lazy graph
 )
 
-# Train on full data
-df = dataset.to_tabular(mode='physics')
+# Train on full data with tier-based features
+df = dataset.to_tabular()  # Uses tiers from DataSelection
 model.train(df)
 ```
 

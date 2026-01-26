@@ -4,18 +4,17 @@ Data Fabric Module
 
 Dual-view data handling for nuclear cross-section data:
 - Graph View: PyG Data objects for GNN training
-- Tabular View: Pandas DataFrames for classical ML
+- Tabular View: Pandas DataFrames with tier-based feature engineering
 
 Key Components:
     NucmlDataset: Main dataset class with dual-view interface
     GraphBuilder: Constructs nuclide topology graphs
-    TabularProjector: Projects graph data to tabular format
+    FeatureGenerator: Generates tier-based features from nuclear data
 """
 
 from nucml_next.data.dataset import NucmlDataset
 # GraphBuilder requires torch - lazy import to avoid forcing torch dependency
 # from nucml_next.data.graph_builder import GraphBuilder
-from nucml_next.data.tabular_projector import TabularProjector
 from nucml_next.data.selection import (
     DataSelection,
     default_selection,
@@ -47,7 +46,6 @@ def __getattr__(name):
 __all__ = [
     "NucmlDataset",
     "GraphBuilder",
-    "TabularProjector",
     "DataSelection",
     "default_selection",
     "full_spectrum_selection",

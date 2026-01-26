@@ -33,7 +33,6 @@ except ImportError:
 
 # Lazy import GraphBuilder (requires torch) - only imported when needed
 # from nucml_next.data.graph_builder import GraphBuilder  # Moved to lazy import in __init__
-from nucml_next.data.tabular_projector import TabularProjector
 from nucml_next.data.selection import DataSelection, default_selection
 from nucml_next.data.transformations import TransformationPipeline
 
@@ -60,7 +59,7 @@ class NucmlDataset(TorchDataset):
         >>>
         >>> # For XGBoost training
         >>> dataset = NucmlDataset('data.parquet', mode='tabular')
-        >>> df = dataset.to_tabular(mode='naive')
+        >>> df = dataset.to_tabular(tiers=['A', 'C'])
     """
 
     def __init__(
@@ -187,8 +186,6 @@ class NucmlDataset(TorchDataset):
             self.graph_builder = GraphBuilder(self.df, self.energy_bins)
         else:
             self.graph_builder = None
-
-        self.tabular_projector = TabularProjector(self.df, self.energy_bins)
 
         # Lazy graph building - only build when accessed (saves initialization time)
         self.graph_data = None
@@ -753,66 +750,55 @@ class NucmlDataset(TorchDataset):
 
     def to_tabular(
         self,
-        mode: Literal['naive', 'physics', 'tier'] = 'naive',
-        reaction_types: Optional[List[int]] = None,
         tiers: Optional[List[str]] = None,
+        reaction_types: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
         Project graph data to tabular format for classical ML.
 
-        Supports three projection strategies:
-        - mode='naive': Legacy features [Z, A, E, MT] (one-hot encoded)
-        - mode='physics': Graph-derived features [Z, A, E, Q, Threshold, ΔZ, ΔA]
-        - mode='tier': Tier-based features using Valdez 2021 hierarchy
+        Uses tier-based feature engineering following Valdez 2021 hierarchy.
+        MT codes are transformed into particle emission vectors (out_n, out_p, etc.)
+        rather than one-hot encoding.
 
         Args:
-            mode: Projection strategy
-            reaction_types: Filter to specific MT codes (None = all reactions)
             tiers: List of feature tiers to include (e.g., ['A', 'C', 'E'])
-                   Only used when mode='tier'. If None, uses selection.tiers.
+                   If None, uses selection.tiers or defaults to ['A'].
+            reaction_types: Filter to specific MT codes (None = all reactions)
 
         Returns:
-            DataFrame ready for XGBoost/Decision Trees
+            DataFrame with tier-based features ready for ML training
 
         Example:
-            >>> # Legacy approach (shows limitations)
-            >>> df_naive = dataset.to_tabular(mode='naive')
-            >>> xgb.fit(df_naive[['Z', 'A', 'Energy', 'MT_18']], df_naive['CrossSection'])
+            >>> # Use default tiers from DataSelection
+            >>> df = dataset.to_tabular()
             >>>
-            >>> # Physics-aware approach (better, but still not smooth)
-            >>> df_physics = dataset.to_tabular(mode='physics')
-            >>> xgb.fit(df_physics[['Z', 'A', 'Energy', 'Q_Value', 'Threshold']], ...)
+            >>> # Specify custom tiers
+            >>> df = dataset.to_tabular(tiers=['A', 'B', 'C'])
+            >>> # Features: Z, A, N, Energy + particle vector + geometry + energetics
             >>>
-            >>> # Tier-based approach (Valdez 2021 hierarchy)
-            >>> df_tier_c = dataset.to_tabular(mode='tier', tiers=['A', 'B', 'C'])
-            >>> # Features include: Z, A, N, Energy, particle emission, radius, energetics
+            >>> # Filter to specific reactions
+            >>> df_fission = dataset.to_tabular(tiers=['A', 'C'], reaction_types=[18])
         """
-        if mode == 'tier':
-            # Use FeatureGenerator for tier-based features
-            from nucml_next.data.features import FeatureGenerator
+        from nucml_next.data.features import FeatureGenerator
 
-            # Determine which tiers to use
-            if tiers is None:
-                # Use tiers from DataSelection if available
-                if self.selection is not None:
-                    tiers = self.selection.tiers
-                else:
-                    tiers = ['A']  # Default to core features
+        # Determine which tiers to use
+        if tiers is None:
+            # Use tiers from DataSelection if available
+            if self.selection is not None:
+                tiers = self.selection.tiers
+            else:
+                tiers = ['A']  # Default to core features
 
-            # Note: No enricher needed - self.df already has AME columns from NucmlDataset loading
-            # FeatureGenerator will compute derived features from existing columns
-            generator = FeatureGenerator(enricher=None)
+        # Note: No enricher needed - self.df already has AME columns from NucmlDataset loading
+        # FeatureGenerator will compute derived features from existing columns
+        generator = FeatureGenerator(enricher=None)
 
-            # Generate tier-based features
-            df = self.df.copy()
-            if reaction_types is not None:
-                df = df[df['MT'].isin(reaction_types)]
+        # Generate tier-based features
+        df = self.df.copy()
+        if reaction_types is not None:
+            df = df[df['MT'].isin(reaction_types)]
 
-            return generator.generate_features(df, tiers=tiers)
-
-        else:
-            # Use legacy TabularProjector for 'naive' and 'physics' modes
-            return self.tabular_projector.project(mode=mode, reaction_types=reaction_types)
+        return generator.generate_features(df, tiers=tiers)
 
     def get_isotope_graph(self, Z: int, A: int) -> Data:
         """

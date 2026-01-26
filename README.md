@@ -446,8 +446,8 @@ dataset = load_dataset(
 # Print summary
 print_dataset_summary(dataset)
 
-# Baseline: XGBoost with physics features
-df = dataset.to_tabular(mode='physics')
+# Baseline: XGBoost with tier-based features
+df = dataset.to_tabular()  # Tier-based features with particle vectors
 xgb = XGBoostEvaluator()
 xgb.train(df)
 
