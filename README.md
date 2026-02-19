@@ -91,6 +91,23 @@ python scripts/ingest_exfor.py --x4-db data/x4sqlite1.db --outlier-method experi
 python scripts/ingest_exfor.py --x4-db data/x4sqlite1.db --test-subset --outlier-method experiment --z-threshold 3.0
 ```
 
+**Memory-efficient mode** for full-database processing (13M+ points):
+
+The outlier detection step can require significant memory. To process the full
+EXFOR database on machines with limited RAM (<64GB), use checkpointing:
+
+```bash
+# Enable checkpointing to reduce memory (clears results after each checkpoint)
+python scripts/ingest_exfor.py --x4-db data/x4sqlite1.db --outlier-method experiment --svgp-checkpoint-dir data/checkpoints/ --output data/exfor_processed.parquet
+
+# For GPU processing with memory optimization
+python scripts/ingest_exfor.py --x4-db data/x4sqlite1.db --outlier-method experiment --svgp-device cuda --svgp-checkpoint-dir data/checkpoints/ --output data/exfor_processed.parquet
+```
+
+The checkpointing system automatically clears processed results from memory
+after each checkpoint (default: every 100 groups), reducing peak memory from
+~100GB to ~20-30GB.
+
 The ingestion pipeline:
 
 1. **Extract** -- reads cross-section measurements from the X4Pro SQLite

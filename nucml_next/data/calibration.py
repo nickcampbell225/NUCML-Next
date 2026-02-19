@@ -591,8 +591,19 @@ def optimize_lengthscale_wasserstein_torch(
         )
 
         if result.success and np.isfinite(result.fun) and result.fun < best_w_grid:
-            return result.x, result.fun
+            best_ls, best_w = result.x, result.fun
+        else:
+            best_ls, best_w = best_ls_grid, best_w_grid
     except Exception as e:
         logger.debug(f"Brent refinement failed: {e}")
+        best_ls, best_w = best_ls_grid, best_w_grid
 
-    return best_ls_grid, best_w_grid
+    # Clear GPU memory after lengthscale optimization
+    if device != 'cpu':
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+    return best_ls, best_w

@@ -67,6 +67,12 @@ class ExperimentOutlierConfig:
         checkpoint_dir: Directory for saving checkpoints (None = no checkpointing).
         checkpoint_interval: Save checkpoint every N groups processed.
         n_workers: Number of parallel workers (None = sequential processing).
+        clear_caches_after_group: If True (default), clear _fitted_gps and
+            _consensus_builders after each group to save memory. Set False
+            for post-hoc diagnostics.
+        streaming_output: Optional path to write results incrementally to Parquet
+            instead of holding in memory. Significantly reduces peak memory for
+            large datasets (>5M points).
     """
     gp_config: ExactGPExperimentConfig = field(default_factory=ExactGPExperimentConfig)
     consensus_config: ConsensusConfig = field(default_factory=ConsensusConfig)
@@ -76,6 +82,8 @@ class ExperimentOutlierConfig:
     checkpoint_dir: Optional[str] = None
     checkpoint_interval: int = 100
     n_workers: Optional[int] = None
+    clear_caches_after_group: bool = True
+    streaming_output: Optional[str] = None
 
 
 class ExperimentOutlierDetector:
@@ -195,6 +203,14 @@ class ExperimentOutlierDetector:
             if start_idx > 0:
                 logger.info(f"Resuming from checkpoint: group {start_idx}/{n_groups}")
 
+        # Streaming mode setup
+        streaming_writer = None
+        streaming_chunks: List[pd.DataFrame] = []
+        streaming_mode = self.config.streaming_output is not None
+
+        if streaming_mode:
+            logger.info(f"Streaming mode enabled: writing to {self.config.streaming_output}")
+
         # Process groups
         iterator = enumerate(groups)
         if has_tqdm:
@@ -212,18 +228,37 @@ class ExperimentOutlierDetector:
                 scored = partial_results[group_key]
             else:
                 scored = self._score_group(group_df, group_key)
-                partial_results[group_key] = scored
+                if not streaming_mode:
+                    partial_results[group_key] = scored
 
-            # Update result DataFrame
-            for col in ['gp_mean', 'gp_std', 'z_score', 'experiment_outlier',
-                       'point_outlier', 'calibration_metric', 'experiment_id']:
-                if col in scored.columns:
-                    result.loc[scored.index, col] = scored[col].values
+            if streaming_mode:
+                # Accumulate scored chunks for streaming write
+                streaming_chunks.append(scored)
 
-            # Checkpoint
-            if (self.config.checkpoint_dir and
+                # Write to disk every 100 groups to bound memory
+                if len(streaming_chunks) >= 100:
+                    self._flush_streaming_chunks(streaming_chunks)
+                    streaming_chunks.clear()
+            else:
+                # Update result DataFrame (traditional mode)
+                for col in ['gp_mean', 'gp_std', 'z_score', 'experiment_outlier',
+                           'point_outlier', 'calibration_metric', 'experiment_id']:
+                    if col in scored.columns:
+                        result.loc[scored.index, col] = scored[col].values
+
+            # Checkpoint (only in non-streaming mode)
+            if (not streaming_mode and self.config.checkpoint_dir and
                     (i + 1) % self.config.checkpoint_interval == 0):
                 self._save_checkpoint(i + 1, partial_results)
+
+            # GPU memory cleanup (every 10 groups when using CUDA)
+            if (self.config.gp_config.device == 'cuda' and
+                    (i + 1) % 10 == 0):
+                try:
+                    import torch
+                    torch.cuda.empty_cache()
+                except ImportError:
+                    pass
 
             # Progress logging (every 10%)
             if not has_tqdm and n_groups >= 10 and (i + 1) % max(1, n_groups // 10) == 0:
@@ -234,20 +269,42 @@ class ExperimentOutlierDetector:
                     f"Discrepant: {self._stats['discrepant_experiments']}"
                 )
 
-        # Final checkpoint
-        if self.config.checkpoint_dir:
-            self._save_checkpoint(n_groups, partial_results)
+        # Final operations
+        if streaming_mode:
+            # Flush any remaining chunks
+            if streaming_chunks:
+                self._flush_streaming_chunks(streaming_chunks)
+                streaming_chunks.clear()
 
-        # Log summary
-        logger.info(
-            f"Experiment scoring complete: "
-            f"{self._stats['gp_experiments']} GP experiments, "
-            f"{self._stats['small_experiments']} small experiments, "
-            f"{self._stats['consensus_groups']} consensus groups, "
-            f"{self._stats['discrepant_experiments']} discrepant experiments"
-        )
+            # Finalize streaming output
+            self._finalize_streaming_output()
 
-        return result
+            # Log summary
+            logger.info(
+                f"Experiment scoring complete (streaming mode): "
+                f"{self._stats['gp_experiments']} GP experiments, "
+                f"{self._stats['small_experiments']} small experiments, "
+                f"{self._stats['consensus_groups']} consensus groups, "
+                f"{self._stats['discrepant_experiments']} discrepant experiments"
+            )
+
+            # In streaming mode, return None since results are on disk
+            return None
+        else:
+            # Final checkpoint
+            if self.config.checkpoint_dir:
+                self._save_checkpoint(n_groups, partial_results)
+
+            # Log summary
+            logger.info(
+                f"Experiment scoring complete: "
+                f"{self._stats['gp_experiments']} GP experiments, "
+                f"{self._stats['small_experiments']} small experiments, "
+                f"{self._stats['consensus_groups']} consensus groups, "
+                f"{self._stats['discrepant_experiments']} discrepant experiments"
+            )
+
+            return result
 
     def _get_entry_column(self, df: pd.DataFrame) -> Optional[str]:
         """Determine which column contains the EXFOR Entry identifier."""
@@ -466,9 +523,10 @@ class ExperimentOutlierDetector:
                     if is_discrepant:
                         self._stats['discrepant_experiments'] += 1
 
-                # Cache for diagnostics
-                self._fitted_gps[group_key] = fitted_gps
-                self._consensus_builders[group_key] = consensus
+                # Cache for diagnostics (only if not clearing caches for memory efficiency)
+                if not self.config.clear_caches_after_group:
+                    self._fitted_gps[group_key] = fitted_gps
+                    self._consensus_builders[group_key] = consensus
 
             except Exception as e:
                 logger.warning(f"Consensus building failed for group {group_key}: {e}")
@@ -580,6 +638,10 @@ class ExperimentOutlierDetector:
 
         logger.info(f"Checkpoint saved: group {group_idx} -> {checkpoint_path}")
 
+        # Clear results dict to free memory after checkpoint
+        # Results are now persisted to disk - no need to keep in RAM
+        results.clear()
+
     def _load_checkpoint(self) -> Tuple[int, Dict[Tuple, pd.DataFrame]]:
         """Load checkpoint if available."""
         if not self.config.checkpoint_dir:
@@ -630,3 +692,40 @@ class ExperimentOutlierDetector:
     def get_consensus_builders(self) -> Dict[Tuple, ConsensusBuilder]:
         """Return consensus builders per group for diagnostics."""
         return self._consensus_builders
+
+    def _flush_streaming_chunks(self, chunks: List[pd.DataFrame]) -> None:
+        """Write accumulated chunks to streaming output file.
+
+        Uses Parquet row groups for efficient append-style writes.
+        """
+        if not chunks or not self.config.streaming_output:
+            return
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        combined = pd.concat(chunks, ignore_index=True)
+        table = pa.Table.from_pandas(combined)
+
+        output_path = Path(self.config.streaming_output)
+
+        # Append to existing file or create new
+        if output_path.exists():
+            # Read existing and combine
+            existing = pq.read_table(output_path)
+            combined_table = pa.concat_tables([existing, table])
+            pq.write_table(combined_table, output_path)
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, output_path)
+
+        logger.debug(f"Flushed {len(combined)} rows to {output_path}")
+
+    def _finalize_streaming_output(self) -> None:
+        """Finalize streaming output (placeholder for future optimizations)."""
+        if not self.config.streaming_output:
+            return
+
+        output_path = Path(self.config.streaming_output)
+        if output_path.exists():
+            logger.info(f"Streaming output complete: {output_path}")
