@@ -23,6 +23,7 @@ wheels/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints
+00_Baselines_and_Limitations_copy.ipynb
 
 # IDEs
 .vscode/
@@ -82,6 +83,8 @@ data/ENDF-B/
 
 # Windows reserved junk
 nul
+
+todo
 
 
 
