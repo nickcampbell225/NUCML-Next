@@ -80,6 +80,10 @@ _REQUIRED_COLUMNS = [
     'z_score', 'gp_mean', 'gp_std', 'Entry',
 ]
 
+_OPTIONAL_COLUMNS = [
+    'experiment_outlier', 'point_outlier', 'experiment_id', 'calibration_metric',
+]
+
 
 def _isotope_str(Z: int, A: int) -> str:
     sym = _SYMBOLS.get(Z, f'Z{Z}')
@@ -115,10 +119,28 @@ class ThresholdExplorer:
 
         # ── Load data ────────────────────────────────────────────────────
         if isinstance(data, (str, Path)):
-            cols = [c for c in _REQUIRED_COLUMNS]
-            self._df = pd.read_parquet(str(data), columns=cols)
+            # Load required columns plus any optional columns that exist
+            all_cols_in_file = pd.read_parquet(str(data), columns=[]).columns.tolist()
+            # Workaround: read with no row limit to get column names
+            import pyarrow.parquet as pq
+            try:
+                pq_file = pq.ParquetFile(str(data))
+                all_cols_in_file = pq_file.schema.names
+            except Exception:
+                all_cols_in_file = _REQUIRED_COLUMNS  # Fallback
+
+            cols_to_load = list(_REQUIRED_COLUMNS)
+            for opt_col in _OPTIONAL_COLUMNS:
+                if opt_col in all_cols_in_file:
+                    cols_to_load.append(opt_col)
+
+            self._df = pd.read_parquet(str(data), columns=cols_to_load)
         else:
             self._df = data.copy()
+
+        # Track which optional columns are available
+        self._has_experiment_outlier = 'experiment_outlier' in self._df.columns
+        self._has_experiment_id = 'experiment_id' in self._df.columns or 'Entry' in self._df.columns
 
         # Validate
         if 'z_score' not in self._df.columns:
@@ -190,17 +212,36 @@ class ThresholdExplorer:
             style={'description_width': '90px'},
         )
 
+        # Per-experiment toggle (only shown if experiment columns available)
+        self._w_color_by_experiment = widgets.Checkbox(
+            value=False,
+            description='Color by experiment',
+            style={'description_width': 'initial'},
+            disabled=not self._has_experiment_id,
+        )
+
         # Wire observers
         self._w_z.observe(self._on_z_change, names='value')
         self._w_a.observe(self._on_a_change, names='value')
         self._w_mt.observe(self._on_mt_change, names='value')
         self._w_threshold.observe(self._on_threshold_change, names='value')
+        self._w_color_by_experiment.observe(self._on_experiment_toggle, names='value')
 
-        controls = widgets.HBox(
+        # Build control rows
+        row1 = widgets.HBox(
             [self._w_z, self._w_a, self._w_mt, self._w_threshold],
-            layout=widgets.Layout(margin='0 0 10px 0'),
+            layout=widgets.Layout(margin='0 0 5px 0'),
         )
-        self._ui = widgets.VBox([controls, self._output])
+
+        # Second row with experiment toggle (only if available)
+        if self._has_experiment_id:
+            row2 = widgets.HBox(
+                [self._w_color_by_experiment],
+                layout=widgets.Layout(margin='0 0 10px 0'),
+            )
+            self._ui = widgets.VBox([row1, row2, self._output])
+        else:
+            self._ui = widgets.VBox([row1, self._output])
 
         # Initialise cascade (triggers A -> MT -> plot)
         self._on_z_change(None)
@@ -240,6 +281,9 @@ class ThresholdExplorer:
         self._update_plot()
 
     def _on_threshold_change(self, change) -> None:
+        self._update_plot()
+
+    def _on_experiment_toggle(self, change) -> None:
         self._update_plot()
 
     # =====================================================================
@@ -343,12 +387,22 @@ class ThresholdExplorer:
 
             # ── Statistics text bar ──────────────────────────────────────
             ax_stats.axis('off')
-            stats_text = (
-                f"Total: {stats['total']:,}   |   "
-                f"Inliers: {stats['n_inliers']:,} ({stats['pct_inliers']:.1f}%)   |   "
-                f"Outliers: {stats['n_outliers']:,} ({stats['pct_outliers']:.1f}%)   |   "
-                f"z-score range: [{stats['z_min']:.2f}, {stats['z_max']:.2f}]"
-            )
+
+            # Build stats text with experiment info if available
+            if stats.get('n_discrepant') is not None:
+                stats_text = (
+                    f"Total: {stats['total']:,}   |   "
+                    f"Experiments: {stats['n_experiments']} ({stats['n_discrepant']} discrepant)   |   "
+                    f"Point outliers: {stats['n_outliers']:,} ({stats['pct_outliers']:.1f}%)   |   "
+                    f"z-score range: [{stats['z_min']:.2f}, {stats['z_max']:.2f}]"
+                )
+            else:
+                stats_text = (
+                    f"Total: {stats['total']:,}   |   "
+                    f"Inliers: {stats['n_inliers']:,} ({stats['pct_inliers']:.1f}%)   |   "
+                    f"Outliers: {stats['n_outliers']:,} ({stats['pct_outliers']:.1f}%)   |   "
+                    f"z-score range: [{stats['z_min']:.2f}, {stats['z_max']:.2f}]"
+                )
             ax_stats.text(
                 0.5, 0.5, stats_text,
                 transform=ax_stats.transAxes,
@@ -624,23 +678,32 @@ class ThresholdExplorer:
             color=OUTLIER_ZONE_CLR, linewidth=1, alpha=0.7,
         )
 
-        # Scatter: inliers vs outliers
-        inlier_mask = z_scores <= threshold
-        outlier_mask = ~inlier_mask
+        # Compute outlier mask (always needed for auto-annotation)
+        outlier_mask = z_scores > threshold
 
-        ax.scatter(
-            log_E[inlier_mask], log_sigma[inlier_mask],
-            c=INLIER_COLOR, s=INLIER_SIZE, alpha=0.5, edgecolors='none',
-            label=f'Inliers ({inlier_mask.sum():,})', zorder=6,
-        )
+        # Scatter: different modes based on "Color by experiment" toggle
+        color_by_exp = self._w_color_by_experiment.value
 
-        if outlier_mask.any():
+        if color_by_exp and self._has_experiment_id:
+            # Per-experiment coloring mode
+            self._draw_experiment_scatter(ax, df, threshold)
+        else:
+            # Default mode: inliers vs outliers
+            inlier_mask = ~outlier_mask
+
             ax.scatter(
-                log_E[outlier_mask], log_sigma[outlier_mask],
-                c=OUTLIER_COLOR, s=OUTLIER_SIZE, alpha=0.9,
-                edgecolors='black', linewidths=0.5,
-                label=f'Outliers ({outlier_mask.sum():,})', zorder=7,
+                log_E[inlier_mask], log_sigma[inlier_mask],
+                c=INLIER_COLOR, s=INLIER_SIZE, alpha=0.5, edgecolors='none',
+                label=f'Inliers ({inlier_mask.sum():,})', zorder=6,
             )
+
+            if outlier_mask.any():
+                ax.scatter(
+                    log_E[outlier_mask], log_sigma[outlier_mask],
+                    c=OUTLIER_COLOR, s=OUTLIER_SIZE, alpha=0.9,
+                    edgecolors='black', linewidths=0.5,
+                    label=f'Outliers ({outlier_mask.sum():,})', zorder=7,
+                )
 
         # ── Energy region vertical spans ─────────────────────────────────
         y_lo, y_hi = ax.get_ylim()
@@ -707,6 +770,155 @@ class ThresholdExplorer:
     # Statistics computation
     # =====================================================================
 
+    def _draw_experiment_scatter(
+        self, ax: Axes, df: pd.DataFrame, threshold: float,
+    ) -> None:
+        """Draw scatter plot colored by experiment, highlighting discrepant ones.
+
+        When "Color by experiment" is enabled:
+        - Each experiment gets a distinct color from tab10 colormap
+        - Discrepant experiments (experiment_outlier=True) get red X markers
+        - Point outliers within experiments get larger size + black edge
+        - Legend shows experiment IDs with checkmark/X status
+        """
+        log_E = df['log_E'].values
+        log_sigma = df['log_sigma'].values
+        z_scores = df['z_score'].values
+
+        # Get experiment ID column
+        exp_col = 'experiment_id' if 'experiment_id' in df.columns else 'Entry'
+        exp_ids = df[exp_col].values
+
+        # Get unique experiments
+        unique_exps = df[exp_col].unique()
+        n_experiments = len(unique_exps)
+
+        # Use tab10 colormap for distinct experiment colors
+        cmap = plt.cm.get_cmap('tab10')
+
+        # Check for per-experiment outlier columns
+        has_exp_outlier = 'experiment_outlier' in df.columns
+        has_point_outlier = 'point_outlier' in df.columns
+
+        # Track which experiments are discrepant for legend
+        discrepant_set = set()
+        if has_exp_outlier:
+            discrepant_ids = df[df['experiment_outlier']][exp_col].unique()
+            discrepant_set = set(discrepant_ids)
+
+        # Plot each experiment separately
+        legend_handles = []
+        legend_labels = []
+
+        for i, exp_id in enumerate(unique_exps):
+            mask = exp_ids == exp_id
+            color = cmap(i % 10)
+
+            exp_log_E = log_E[mask]
+            exp_log_sigma = log_sigma[mask]
+            exp_z = z_scores[mask]
+
+            is_discrepant = exp_id in discrepant_set
+
+            # Determine marker style based on experiment status
+            if is_discrepant:
+                # Discrepant experiments: red X markers
+                marker = 'X'
+                base_color = OUTLIER_COLOR
+                edge_color = 'darkred'
+                size = OUTLIER_SIZE
+                alpha = 0.9
+            else:
+                # Normal experiments: colored circles
+                marker = 'o'
+                base_color = color
+                edge_color = 'none'
+                size = INLIER_SIZE
+                alpha = 0.6
+
+            # Check for point outliers within this experiment
+            if has_point_outlier:
+                point_outlier_mask = df.loc[mask, 'point_outlier'].values
+            else:
+                # Fall back to z-score threshold
+                point_outlier_mask = exp_z > threshold
+
+            # Plot non-point-outlier points
+            normal_mask = ~point_outlier_mask
+            if normal_mask.any():
+                scatter = ax.scatter(
+                    exp_log_E[normal_mask], exp_log_sigma[normal_mask],
+                    c=[base_color], s=size, alpha=alpha,
+                    marker=marker, edgecolors=edge_color, linewidths=0.5,
+                    zorder=6,
+                )
+
+            # Plot point outliers with larger size + black edge
+            if point_outlier_mask.any():
+                ax.scatter(
+                    exp_log_E[point_outlier_mask], exp_log_sigma[point_outlier_mask],
+                    c=[base_color], s=size * 2.5, alpha=0.9,
+                    marker=marker, edgecolors='black', linewidths=1.5,
+                    zorder=7,
+                )
+
+            # Build legend entry (limit to first 8 experiments to avoid clutter)
+            if i < 8:
+                # Truncate long experiment IDs
+                exp_str = str(exp_id)
+                if len(exp_str) > 10:
+                    exp_str = exp_str[:10] + '..'
+
+                if is_discrepant:
+                    label = f'{exp_str} \u2717'  # ✗ mark
+                    handle = plt.Line2D(
+                        [0], [0], marker='X', color='w',
+                        markerfacecolor=OUTLIER_COLOR, markersize=8,
+                        markeredgecolor='darkred', markeredgewidth=0.5,
+                        linestyle='None',
+                    )
+                else:
+                    label = f'{exp_str} \u2713'  # ✓ mark
+                    handle = plt.Line2D(
+                        [0], [0], marker='o', color='w',
+                        markerfacecolor=color, markersize=6,
+                        linestyle='None',
+                    )
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+        # Add "more experiments" indicator if needed
+        if n_experiments > 8:
+            more_label = f'... +{n_experiments - 8} more'
+            more_handle = plt.Line2D(
+                [0], [0], marker='', color='gray', linestyle='None',
+            )
+            legend_handles.append(more_handle)
+            legend_labels.append(more_label)
+
+        # Add legend for point outlier indicator
+        if has_point_outlier or (z_scores > threshold).any():
+            outlier_handle = plt.Line2D(
+                [0], [0], marker='o', color='w',
+                markerfacecolor='gray', markersize=10,
+                markeredgecolor='black', markeredgewidth=1.5,
+                linestyle='None',
+            )
+            legend_handles.append(outlier_handle)
+            legend_labels.append('Point outlier (z > thr)')
+
+        # Create legend with experiment info
+        ax.legend(
+            legend_handles, legend_labels,
+            loc='upper right', fontsize=7, frameon=True,
+            framealpha=0.9, ncol=2 if n_experiments > 4 else 1,
+            title='Experiments', title_fontsize=8,
+        )
+
+    # =====================================================================
+    # Statistics computation
+    # =====================================================================
+
     def _compute_statistics(
         self, df: pd.DataFrame, threshold: float,
     ) -> dict:
@@ -714,7 +926,8 @@ class ThresholdExplorer:
         z_scores = df['z_score'].values
         n_outliers = int((z_scores > threshold).sum())
         n_inliers = total - n_outliers
-        return {
+
+        stats = {
             'total': total,
             'n_inliers': n_inliers,
             'n_outliers': n_outliers,
@@ -723,3 +936,24 @@ class ThresholdExplorer:
             'z_min': float(z_scores.min()),
             'z_max': float(z_scores.max()),
         }
+
+        # Add per-experiment stats if available
+        if self._has_experiment_outlier and 'experiment_outlier' in df.columns:
+            exp_col = 'experiment_id' if 'experiment_id' in df.columns else 'Entry'
+            n_experiments = df[exp_col].nunique()
+            discrepant_ids = df[df['experiment_outlier']][exp_col].unique()
+            n_discrepant = len(discrepant_ids)
+            n_points_in_discrepant = df['experiment_outlier'].sum()
+
+            stats['n_experiments'] = n_experiments
+            stats['n_discrepant'] = n_discrepant
+            stats['n_points_in_discrepant'] = int(n_points_in_discrepant)
+        else:
+            # No per-experiment data
+            exp_col = 'Entry' if 'Entry' in df.columns else None
+            if exp_col:
+                stats['n_experiments'] = df[exp_col].nunique()
+            stats['n_discrepant'] = None
+            stats['n_points_in_discrepant'] = None
+
+        return stats

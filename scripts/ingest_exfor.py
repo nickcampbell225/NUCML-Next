@@ -160,7 +160,7 @@ Note:
         type=int,
         default=40000,
         help='Max points per experiment on GPU; larger experiments use CPU '
-             '(default: 40000). Memory: n² × 8 bytes, so 40k pts = 12.8GB'
+             '(default: 40000). Memory: n^2 * 8 bytes, so 40k pts = 12.8GB'
     )
     parser.add_argument(
         '--max-subsample-points',

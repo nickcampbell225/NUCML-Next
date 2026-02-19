@@ -466,17 +466,29 @@ class NucmlDataset(TorchDataset):
             else:
                 self._holdout_df = None
 
-            # 3. Outlier filtering (z_score-based, from SVGP ingestion)
+            # 3a. Point-level outlier filtering (z_score-based)
             if selection.z_threshold is not None and not selection.include_outliers:
                 if 'z_score' in df.columns:
                     before = len(df)
                     df = df[df['z_score'] <= selection.z_threshold]
                     removed = before - len(df)
                     if removed > 0:
-                        print(f"  [OK] Outlier filter: Removed {removed:,} points with z_score > {selection.z_threshold}")
+                        print(f"  [OK] Point outlier filter: Removed {removed:,} points with z_score > {selection.z_threshold}")
                 else:
                     print(f"  [!] Warning: z_threshold={selection.z_threshold} specified but z_score column "
-                          f"not found in Parquet. Run ingestion with --run-svgp to enable outlier filtering.")
+                          f"not found in Parquet. Run ingestion with --outlier-method to enable outlier filtering.")
+
+            # 3b. Experiment-level outlier filtering (from per-experiment GP method)
+            if selection.exclude_discrepant_experiments:
+                if 'experiment_outlier' in df.columns:
+                    before = len(df)
+                    df = df[~df['experiment_outlier']]
+                    removed = before - len(df)
+                    if removed > 0:
+                        print(f"  [OK] Discrepant experiments removed: {removed:,} points")
+                else:
+                    print(f"  [!] Warning: exclude_discrepant_experiments=True but experiment_outlier column "
+                          f"not found. Use --outlier-method experiment during ingestion.")
 
             # 4. Data validity (drop NaN or non-positive cross-sections, invalid isotopes)
             if selection.drop_invalid:
@@ -991,6 +1003,52 @@ class NucmlDataset(TorchDataset):
             })
 
         return pd.DataFrame(rows)
+
+    def experiment_outlier_summary(self) -> pd.DataFrame:
+        """
+        Summarize discrepant experiments from per-experiment GP outlier detection.
+
+        Requires the Parquet to have been ingested with --outlier-method experiment,
+        which adds experiment_outlier and experiment_id columns.
+
+        Returns:
+            DataFrame with columns: n_experiments, n_discrepant, pct_discrepant,
+                                   n_points_in_discrepant, pct_points_affected
+
+        Raises:
+            ValueError: If experiment_outlier column not found in dataset
+
+        Example:
+            >>> dataset.experiment_outlier_summary()
+               n_experiments  n_discrepant  pct_discrepant  n_points_in_discrepant  pct_points_affected
+            0           1234            45            3.65                   12345                 2.80
+        """
+        if 'experiment_outlier' not in self.df.columns:
+            raise ValueError(
+                "experiment_outlier column not found in dataset.\n"
+                "Run ingestion with --outlier-method experiment to enable:\n"
+                "  python scripts/ingest_exfor.py --x4-db data/x4sqlite1.db --outlier-method experiment"
+            )
+
+        # Count experiments
+        exp_col = 'experiment_id' if 'experiment_id' in self.df.columns else 'Entry'
+        n_experiments = self.df[exp_col].nunique()
+
+        # Count discrepant experiments
+        discrepant_ids = self.df[self.df['experiment_outlier']][exp_col].unique()
+        n_discrepant = len(discrepant_ids)
+
+        # Count points in discrepant experiments
+        n_points_affected = self.df['experiment_outlier'].sum()
+        total_points = len(self.df)
+
+        return pd.DataFrame([{
+            'n_experiments': n_experiments,
+            'n_discrepant': n_discrepant,
+            'pct_discrepant': 100 * n_discrepant / n_experiments if n_experiments > 0 else 0.0,
+            'n_points_in_discrepant': int(n_points_affected),
+            'pct_points_affected': 100 * n_points_affected / total_points if total_points > 0 else 0.0,
+        }])
 
     def get_transformation_pipeline(
         self,

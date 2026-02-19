@@ -266,9 +266,10 @@ class DataSelection:
     holdout_isotopes: Optional[List[Tuple[int, int]]] = None  # LEGACY: [(Z, A), ...] to exclude
     holdout_config: Optional[Any] = None  # HoldoutConfig (rich phase-space holdout)
 
-    # Outlier filtering (requires z_score column from SVGP ingestion)
+    # Outlier filtering (requires outlier columns from ingestion)
     z_threshold: Optional[float] = None    # None = no filtering; 3.0 = exclude z > 3
     include_outliers: bool = True          # False = remove points above z_threshold
+    exclude_discrepant_experiments: bool = False  # True = remove entire discrepant experiments
 
     # Feature tier selection (Valdez 2021 hierarchy)
     tiers: List[str] = field(default_factory=lambda: ['A'])  # Default: Core features only
