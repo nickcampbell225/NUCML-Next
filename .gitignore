@@ -37,7 +37,7 @@ data/*.db
 !data/x4sqlite1_sample.db
 data/AME2020/
 data/EXFOR*/
-data/ENDF:B-VIII.1_neutron/*.h5
+data/ENDF_B-VIII.1_neutron/*.h5
 
 # Generated AME cleaned files (can be regenerated with scripts/clean_ame_files.py)
 data/*_clean.mas20.txt
