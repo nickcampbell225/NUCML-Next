@@ -23,7 +23,6 @@ wheels/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints
-00_Baselines_and_Limitations_copy.ipynb
 
 # IDEs
 .vscode/
