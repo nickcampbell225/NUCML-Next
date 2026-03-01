@@ -1313,7 +1313,7 @@ class ThresholdExplorer:
                 )
                 return
 
-            energies, xs = reader.get_cross_section(mt)
+            energies, xs, _source = reader.get_cross_section_best(mt)
 
             # Filter to positive cross-sections (required for log scale)
             pos = (energies > 0) & (xs > 0)
