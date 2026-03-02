@@ -20,7 +20,7 @@ Example:
     >>> # Quick plot with EXFOR and ENDF
     >>> fig = CrossSectionFigure(isotope='U-235', mt=18, title='U-235 Fission')
     >>> fig.add_exfor(exfor_df)
-    >>> fig.add_endf('data/ENDF-B/neutrons/n-092_U_235.endf')
+    >>> fig.add_endf()  # fetches from IAEA NDS (cached)
     >>> fig.show()
     >>>
     >>> # Compare multiple models
@@ -28,7 +28,7 @@ Example:
     >>> fig.add_exfor(exfor_df, label='EXFOR (n,p)')
     >>> fig.add_model(energies, dt_pred, label='Decision Tree', color='red', linestyle='--')
     >>> fig.add_model(energies, xgb_pred, label='XGBoost', color='green')
-    >>> fig.add_endf_auto()  # Auto-find ENDF file
+    >>> fig.add_endf_auto()  # Auto-fetch evaluated data
     >>> fig.save('cl35_np_comparison.png', dpi=300)
 """
 
@@ -41,7 +41,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 import matplotlib.colors as mcolors
 
-from .endf_reader import ENDFReader, NNDCSigmaFetcher
+from .endf_reader import NNDCSigmaFetcher
 
 
 class CrossSectionFigure:
@@ -131,7 +131,6 @@ class CrossSectionFigure:
         log_y: bool = True,
         grid: bool = True,
         grid_alpha: float = 0.3,
-        endf_dir: Union[str, Path] = 'data/ENDF-B/neutrons',
     ):
         """
         Initialize cross-section figure.
@@ -150,7 +149,6 @@ class CrossSectionFigure:
             log_y: Use logarithmic y-axis
             grid: Show grid lines
             grid_alpha: Grid transparency
-            endf_dir: Directory containing ENDF files for auto-lookup
 
         Example:
             >>> fig = CrossSectionFigure('U-235', mt=18)
@@ -170,7 +168,6 @@ class CrossSectionFigure:
 
         self.isotope = f"{self.symbol}-{self.a}" if self.symbol else None
         self.mt = mt
-        self.endf_dir = Path(endf_dir)
 
         # Figure settings
         self.energy_units = energy_units
@@ -417,7 +414,8 @@ class CrossSectionFigure:
 
     def add_endf(
         self,
-        filepath: Union[str, Path],
+        z: Optional[int] = None,
+        a: Optional[int] = None,
         mt: Optional[int] = None,
         label: Optional[str] = None,
         color: Optional[str] = None,
@@ -427,25 +425,20 @@ class CrossSectionFigure:
         zorder: int = 2,
         energy_min: Optional[float] = None,
         energy_max: Optional[float] = None,
-        xs_min: float = 1e-15,
-        prefer: str = "auto",
         library: str = "endfb8.0",
         **kwargs,
     ) -> 'CrossSectionFigure':
         """
-        Add ENDF-B evaluated data from file, with automatic NNDC fallback.
+        Add ENDF evaluated cross-section data via NNDC Sigma.
 
-        When ``prefer="auto"`` (default), the method inspects the MF=3
-        pointwise data.  If the data is *sparse* (< 200 points, indicating
-        resonance parameters stored in MF=2), it automatically attempts to
-        fetch resonance-reconstructed pointwise data from NNDC Sigma.  If
-        the NNDC fetch fails (timeout / no connectivity), it falls back to
-        raw MF=3 with a clear warning.
+        Fetches NJOY-reconstructed pointwise data from NNDC Sigma with full
+        resonance detail.  Data is cached locally after first fetch.
 
         Args:
-            filepath: Path to ENDF-6 formatted file
+            z: Atomic number. Uses figure's Z if None.
+            a: Mass number. Uses figure's A if None.
             mt: Reaction type. Uses figure's MT if None.
-            label: Legend label. Auto-generated from data source if None.
+            label: Legend label. Auto-generated if None.
             color: Line color. Auto-assigned if None.
             linewidth: Line width
             linestyle: Line style ('-', '--', '-.', ':')
@@ -453,16 +446,6 @@ class CrossSectionFigure:
             zorder: Drawing order
             energy_min: Minimum energy filter (eV)
             energy_max: Maximum energy filter (eV)
-            xs_min: Minimum cross-section filter (barns). ENDF files use very
-                    small placeholder values (e.g., 1e-20) for zero cross-section
-                    below threshold. This filter removes those placeholders.
-                    Default: 1e-15 barns. Set to 0 to include all data.
-                    Only applied to raw MF=3 data (not NNDC data).
-            prefer: Data source preference:
-
-                * ``"auto"`` – use NNDC when MF=3 is sparse (default)
-                * ``"endf"`` – always use local MF=3
-                * ``"nndc"`` – always fetch from NNDC Sigma
             library: NNDC library id (``"endfb8.0"``, ``"endfb7.1"``, …).
             **kwargs: Additional arguments passed to ax.plot()
 
@@ -470,68 +453,20 @@ class CrossSectionFigure:
             self for method chaining
 
         Raises:
-            FileNotFoundError: If ENDF file not found
-            ValueError: If MT reaction not in file
+            ValueError: If Z, A, or MT not specified
+            RuntimeError: If data cannot be fetched from NNDC
 
         Example:
-            >>> fig.add_endf('data/ENDF-B/neutrons/n-092_U_235.endf', mt=18)
-            >>> fig.add_endf(endf_path, color='black', linewidth=2.5)
-            >>> # Force raw MF=3 even for sparse data:
-            >>> fig.add_endf(endf_path, mt=103, prefer='endf')
-            >>> # Force NNDC Sigma reconstructed data:
-            >>> fig.add_endf(endf_path, mt=103, prefer='nndc')
+            >>> fig = CrossSectionFigure('U-235', mt=18)
+            >>> fig.add_endf()
+            >>> fig.add_endf(z=17, a=35, mt=103, color='red')
         """
-        # Use figure's MT if not specified
-        if mt is None:
-            mt = self.mt
-        if mt is None:
-            raise ValueError("MT must be specified (either in add_endf or figure constructor)")
-
-        # Read ENDF file and decide data source
-        reader = ENDFReader(filepath)
-        energies, xs, source = reader.get_cross_section_best(
-            mt, prefer=prefer, library=library,
-            energy_min=energy_min, energy_max=energy_max,
+        return self.add_nndc_sigma(
+            z=z, a=a, mt=mt, label=label, color=color,
+            linewidth=linewidth, linestyle=linestyle, alpha=alpha,
+            zorder=zorder, energy_min=energy_min, energy_max=energy_max,
+            library=library, **kwargs,
         )
-
-        # Filter out placeholder zeros and non-positive values
-        # (essential for log-scale plotting; ENDF files use tiny placeholders
-        # like 1e-20 for below-threshold cross-sections)
-        pos_mask = (energies > 0) & (xs > 0)
-        if source == "endf_mf3" and xs_min > 0:
-            pos_mask &= xs >= xs_min
-        energies = energies[pos_mask]
-        xs = xs[pos_mask]
-
-        if len(energies) == 0:
-            import warnings
-            warnings.warn(f"No positive ENDF data for MT={mt} after filtering")
-            return self
-
-        # Auto-assign color
-        if color is None:
-            color = self._get_next_color()
-
-        # Auto-generate label reflecting actual data source
-        if label is None:
-            mt_desc = reader.get_mt_description(mt)
-            if source == "nndc_sigma":
-                label = f'NNDC Sigma {mt_desc} (reconstructed pointwise)'
-            else:
-                label = f'ENDF MF=3 {mt_desc} (raw)'
-
-        # Plot line
-        line, = self.ax.plot(
-            energies, xs,
-            color=color, linewidth=linewidth, linestyle=linestyle,
-            alpha=alpha, zorder=zorder, label=label,
-            **kwargs
-        )
-
-        self._legend_handles.append(line)
-        self._legend_labels.append(label)
-
-        return self
 
     def add_endf_auto(
         self,
@@ -539,10 +474,10 @@ class CrossSectionFigure:
         **kwargs,
     ) -> 'CrossSectionFigure':
         """
-        Automatically find and add ENDF-B data for the figure's isotope.
+        Add ENDF data for the figure's isotope via NNDC Sigma.
 
-        Uses the isotope (Z, A) set in the constructor to find the
-        corresponding ENDF file in the configured ENDF directory.
+        Convenience wrapper around :meth:`add_endf` using the isotope
+        (Z, A) set in the constructor.
 
         Args:
             mt: Reaction type. Uses figure's MT if None.
@@ -552,23 +487,16 @@ class CrossSectionFigure:
             self for method chaining
 
         Raises:
-            ValueError: If isotope not set or ENDF file not found
+            ValueError: If isotope not set
 
         Example:
             >>> fig = CrossSectionFigure('U-235', mt=18)
-            >>> fig.add_endf_auto()  # Auto-finds n-092_U_235.endf
+            >>> fig.add_endf_auto()
         """
         if self.z is None or self.a is None:
             raise ValueError("Isotope must be set to use add_endf_auto()")
 
-        filepath = ENDFReader.find_file(self.z, self.a, self.endf_dir)
-        if filepath is None:
-            raise ValueError(
-                f"ENDF file not found for {self.isotope} in {self.endf_dir}. "
-                f"Use add_endf() with explicit path."
-            )
-
-        return self.add_endf(filepath, mt=mt, **kwargs)
+        return self.add_endf(mt=mt, **kwargs)
 
     def add_nndc_sigma(
         self,
@@ -587,12 +515,11 @@ class CrossSectionFigure:
         **kwargs,
     ) -> 'CrossSectionFigure':
         """
-        Add processed pointwise cross-section data from NNDC Sigma.
+        Add evaluated pointwise cross-section data from IAEA NDS.
 
-        NNDC Sigma provides cross-section data that has been processed through
-        NJOY to reconstruct resonance parameters into pointwise data. This is
-        particularly useful for reactions where the local ENDF file only contains
-        sparse MF=3 data (like Cl-35 (n,p)).
+        Fetches PENDF data (processed through NJOY/PREPRO) with full
+        resonance reconstruction.  Covers all major libraries: ENDF/B,
+        JEFF, JENDL, TENDL, CENDL, BROND, and more.
 
         Requires internet connection on first call; data is cached locally.
 
@@ -608,7 +535,7 @@ class CrossSectionFigure:
             zorder: Drawing order
             energy_min: Minimum energy filter (eV)
             energy_max: Maximum energy filter (eV)
-            library: Nuclear data library ("endfb8.0", "endfb7.1", "jendl5.0", "jeff3.3")
+            library: Nuclear data library ("endfb8.0", "jeff3.3", "jendl5", etc.)
             **kwargs: Additional arguments passed to ax.plot()
 
         Returns:
@@ -616,10 +543,9 @@ class CrossSectionFigure:
 
         Raises:
             ValueError: If Z, A, or MT not specified
-            RuntimeError: If data cannot be fetched from NNDC
+            RuntimeError: If data cannot be fetched
 
         Example:
-            >>> # For reactions with resonance structure in MF=2
             >>> fig = CrossSectionFigure('Cl-35', mt=103)
             >>> fig.add_exfor(exfor_df)
             >>> fig.add_nndc_sigma()  # Gets full resonance-resolved data

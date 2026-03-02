@@ -129,11 +129,9 @@ class ThresholdExplorer:
         data: Union[str, Path, pd.DataFrame],
         default_threshold: float = 3.0,
         figsize: Tuple[float, float] = (16, 7),
-        endf_dir: Union[str, Path] = 'data/ENDF-B/neutrons',
     ):
         self._figsize = figsize
         self._default_threshold = default_threshold
-        self._endf_dir = str(endf_dir)
 
         # ── Load data ────────────────────────────────────────────────────
         if isinstance(data, (str, Path)):
@@ -1279,13 +1277,12 @@ class ThresholdExplorer:
     # =====================================================================
 
     def _draw_endf_overlay(self, ax: Axes, filtered: pd.DataFrame) -> None:
-        """Overlay ENDF-B evaluated data on the filtered-data panel.
+        """Overlay evaluated cross-section data on the filtered-data panel.
 
-        Uses :class:`ENDFReader` to load MF=3 pointwise cross-section data
-        matching the currently selected Z, A, MT.  Only available for
-        neutron-projectile data since the ENDF-B files are neutron libraries.
+        Uses :class:`NNDCSigmaFetcher` to fetch PENDF pointwise data from
+        the IAEA NDS API (cached locally after first fetch).
         """
-        from .endf_reader import ENDFReader
+        from .endf_reader import NNDCSigmaFetcher
 
         z = self._w_z.value
         a = self._w_a.value
@@ -1294,26 +1291,8 @@ class ThresholdExplorer:
             return
 
         try:
-            endf_path = ENDFReader.find_file(z, a, endf_dir=self._endf_dir)
-            if endf_path is None:
-                ax.text(
-                    0.98, 0.02, 'ENDF-B file not found',
-                    transform=ax.transAxes, ha='right', va='bottom',
-                    fontsize=7, color='#999', style='italic',
-                )
-                return
-
-            reader = ENDFReader(endf_path)
-            available_mts = reader.list_reactions()
-            if mt not in available_mts:
-                ax.text(
-                    0.98, 0.02, f'MT={mt} not in ENDF-B',
-                    transform=ax.transAxes, ha='right', va='bottom',
-                    fontsize=7, color='#999', style='italic',
-                )
-                return
-
-            energies, xs, _source = reader.get_cross_section_best(mt)
+            fetcher = NNDCSigmaFetcher()
+            energies, xs = fetcher.get_cross_section(z=z, a=a, mt=mt)
 
             # Filter to positive cross-sections (required for log scale)
             pos = (energies > 0) & (xs > 0)
@@ -1326,16 +1305,26 @@ class ThresholdExplorer:
             log_E_endf = np.log10(energies)
             log_xs_endf = np.log10(xs)
 
+            lib_label = fetcher._iaea_lib_name
             ax.plot(
                 log_E_endf, log_xs_endf,
                 color='black', linewidth=1.5, alpha=0.8, zorder=10,
-                label=f'ENDF/B-VIII.0 ({len(energies):,} pts)',
+                label=f'{lib_label} ({len(energies):,} pts)',
             )
         except Exception as exc:
+            # Shorten long error messages for display
+            msg = str(exc).split('\n')[0]
+            if len(msg) > 80:
+                msg = msg[:77] + '...'
             ax.text(
-                0.98, 0.02, f'ENDF error: {exc}',
-                transform=ax.transAxes, ha='right', va='bottom',
-                fontsize=7, color='red', style='italic',
+                0.5, 0.5,
+                f'ENDF overlay unavailable\n{msg}',
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=9, color='red', style='italic', alpha=0.7,
+                bbox=dict(
+                    boxstyle='round,pad=0.4', facecolor='#fff0f0',
+                    edgecolor='#ffcccc', alpha=0.8,
+                ),
             )
 
     # =====================================================================

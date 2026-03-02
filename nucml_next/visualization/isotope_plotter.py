@@ -108,8 +108,6 @@ class IsotopePlotter:
     energy_range : tuple of float
         Default ``(E_min, E_max)`` in eV applied to both data filtering
         and axis limits.  Can be overridden per-plot.
-    endf_dir : str or Path
-        Directory containing ENDF-6 files for ``add_endf_auto()``.
     clip_floor : float
         Minimum positive value for predictions (prevents log-scale errors).
     figsize : tuple of float
@@ -137,7 +135,6 @@ class IsotopePlotter:
         training_df: pd.DataFrame,
         models: Dict[str, Any],
         energy_range: Tuple[float, float] = (1e-5, 2e7),
-        endf_dir: Union[str, Path] = 'data/ENDF-B/neutrons',
         clip_floor: float = 1e-30,
         figsize: Tuple[float, float] = (14, 7),
         exfor_color: str = 'tab:blue',
@@ -160,7 +157,6 @@ class IsotopePlotter:
         self.training_df = training_df
         self.models = models
         self.energy_range = energy_range
-        self.endf_dir = str(endf_dir)
         self.clip_floor = clip_floor
         self.figsize = figsize
         self.exfor_color = exfor_color
@@ -272,7 +268,6 @@ class IsotopePlotter:
             z=Z, a=A, mt=MT,
             title=title,
             figsize=_figsize,
-            endf_dir=self.endf_dir,
         )
 
         # EXFOR scatter
