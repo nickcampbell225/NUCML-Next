@@ -37,6 +37,8 @@ data/*.db
 !data/x4sqlite1_sample.db
 data/AME2020/
 data/EXFOR*/
+*.parquet
+
 
 # Generated AME cleaned files (can be regenerated with scripts/clean_ame_files.py)
 data/*_clean.mas20.txt
